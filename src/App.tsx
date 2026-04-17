@@ -17,7 +17,7 @@ import { SettingsPage } from "@/routes/SettingsPage";
 // parent route that renders the responsive nav shell + <Outlet/>.
 const router = createHashRouter([
   { path: "/", element: <HomePage /> },
-  { path: "/new", element: <NewGamePage /> },
+  { path: "/new-game", element: <NewGamePage /> },
   {
     element: <GameLayout />,
     children: [
