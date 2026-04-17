@@ -62,6 +62,15 @@ export interface BusinessUiDescriptor {
     | "projects"
     | "wells"
     | "city_services"
+    // v0.8 additions
+    | "route" // food_truck daily route
+    | "door" // nightclub cover/VIP
+    | "screens" // cinema screen programming
+    | "productions" // movie_studio / gaming_studio releases
+    | "crew" // construction / studio crews
+    | "clinicians" // hospital_clinic doctors/nurses
+    | "portfolio" // real_estate_firm portfolio
+    | "contracts" // military_tech gov contracts
   >;
 }
 

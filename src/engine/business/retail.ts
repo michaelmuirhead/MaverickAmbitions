@@ -176,7 +176,11 @@ function createBusiness(params: {
 // ---------- Simulation ----------
 
 function getState(biz: Business): CornerStoreState {
-  return biz.state as unknown as CornerStoreState;
+  // Deep-clone so in-place mutations inside onHour/onDay/onWeek don't touch
+  // the frozen input state. The cloned tree is packaged back into the
+  // returned Business via `state: state as ...`, keeping the module pure
+  // from stepTick's point of view.
+  return structuredClone(biz.state) as unknown as CornerStoreState;
 }
 
 function computeStockLevel(state: CornerStoreState): number {

@@ -1,5 +1,3 @@
-"use client";
-
 import { useGameStore } from "@/state/store";
 import { selectNetWorth } from "@/state/selectors";
 import { formatGameDate } from "@/lib/date";

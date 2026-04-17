@@ -7,6 +7,7 @@ import { nanoid } from "nanoid";
 import type { GameState, Id, MacroState, Property } from "@/types/game";
 
 import { STARTER_MARKETS } from "@/data/markets";
+import { STARTER_REGIONS } from "@/data/regions";
 import { createRng } from "@/lib/rng";
 
 import { createRival } from "./ai/rival";
@@ -31,6 +32,7 @@ export function newGame(opts: NewGameOptions = {}): GameState {
   const macro: MacroState = initialMacroState();
 
   const markets = { ...STARTER_MARKETS };
+  const regions = { ...STARTER_REGIONS };
 
   const difficulty = opts.difficulty ?? 3;
   const operator = createRival({
@@ -66,7 +68,7 @@ export function newGame(opts: NewGameOptions = {}): GameState {
   }
 
   return {
-    version: 3,
+    version: 6,
     seed,
     clock: { tick: 0, lastStepAt: Date.now(), speed: 1 },
     macro,
@@ -74,6 +76,7 @@ export function newGame(opts: NewGameOptions = {}): GameState {
     family: {},
     businesses: {},
     markets,
+    regions,
     rivals,
     properties,
     mortgages: {},

@@ -69,7 +69,7 @@ export function stepTick(state: GameState): GameState {
   // 1a. Expire any shocks whose endTick has passed (frees up cooldown slots).
   const expiry = expireFinishedEvents(state, tick);
   let activeEvents = expiry.activeEvents;
-  let eventHistory = expiry.eventHistory;
+  const eventHistory = expiry.eventHistory;
 
   // 1b. Apply pulse composition over the baseline macro.
   const macro = applyMacroPulses(baselineMacro, activeEvents);
