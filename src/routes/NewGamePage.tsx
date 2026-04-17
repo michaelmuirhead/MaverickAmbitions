@@ -16,8 +16,9 @@ export function NewGamePage() {
     <main className="min-h-screen px-4 py-10 max-w-md mx-auto">
       <h1 className="text-2xl font-bold text-ink-50 mb-1">New Game</h1>
       <p className="text-ink-400 text-sm mb-6">
-        You are 24. You have $15,000 to your name and a feeling you are meant
-        for more.
+        You are 24, newly arrived in Maverick County, NY — a booming county on
+        the outskirts of New York City. You have $15,000 to your name and a
+        feeling you are meant for more.
       </p>
       <Card title="Founder">
         <label className="block text-xs text-ink-400 mb-2 mt-1">

@@ -1,8 +1,10 @@
+import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { DebugConsole } from "@/components/game/DebugConsole";
+import { Tutorial, resetTutorialSeen } from "@/components/game/Tutorial";
 
 import { useGameStore } from "@/state/store";
 
@@ -11,6 +13,7 @@ import { AUTOSAVE_SLOT, deleteSave, listSaves, saveGame } from "@/engine";
 export function SettingsPage() {
   const game = useGameStore((s) => s.game)!;
   const navigate = useNavigate();
+  const [tutorialOpen, setTutorialOpen] = useState(false);
 
   return (
     <div className="space-y-4 max-w-2xl">
@@ -62,14 +65,34 @@ export function SettingsPage() {
         </div>
       </Card>
 
+      <Card title="Tutorial" subtitle="Replay the 7-step intro to the core loop.">
+        <Button
+          variant="secondary"
+          onClick={() => {
+            resetTutorialSeen();
+            setTutorialOpen(true);
+          }}
+        >
+          Replay tutorial
+        </Button>
+        <Tutorial
+          open={tutorialOpen}
+          onClose={() => setTutorialOpen(false)}
+        />
+      </Card>
+
       <DebugConsole />
 
       <Card title="About">
         <p className="text-sm text-ink-300 leading-relaxed">
           <strong>Maverick Ambitions</strong> is a generational business
-          simulation. You start as a 24-year-old with $15,000 and build an
-          empire that outlasts you. This is v0.6 — Vite + HashRouter, SBA
-          business loans. See DESIGN.md in the repo for what ships next.
+          simulation set in <strong>Maverick County, NY</strong> — a fictional
+          booming county on the outskirts of New York City. You start as a
+          24-year-old with $15,000 and build an empire that outlasts you.
+          This is v0.7.3 — the Maverick County, NY rebrand: per-neighborhood
+          flavor, a Region data model, and the forward-looking architecture
+          for Phase 2 (NYC boroughs, Long Island, NJ) and Phase 3 (national
+          metros). See DESIGN.md in the repo for what ships next.
         </p>
       </Card>
     </div>

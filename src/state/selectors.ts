@@ -1,5 +1,3 @@
-"use client";
-
 import type { Business, Cents, GameState, Property } from "@/types/game";
 
 import {

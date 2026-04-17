@@ -27,8 +27,10 @@ export function HomePage() {
           Ambitions
         </h1>
         <p className="mt-4 text-ink-300 text-sm sm:text-base leading-relaxed">
-          Start with a single corner store. Build an empire across industries.
-          Marry, raise heirs, outlast your rivals — across generations.
+          Maverick County, NY — a booming county on the outskirts of New York
+          City. Start with a single corner store. Build an empire across
+          industries. Marry, raise heirs, outlast your rivals — across
+          generations.
         </p>
         <div className="mt-8 flex flex-col sm:flex-row gap-3 justify-center">
           <Link to="/new-game" className="contents">
@@ -40,7 +42,9 @@ export function HomePage() {
             </Button>
           </Link>
         </div>
-        <p className="mt-8 text-xs text-ink-500">v0.6 — Vite + HashRouter</p>
+        <p className="mt-8 text-xs text-ink-500">
+          v0.7.3 — Maverick County, NY
+        </p>
       </div>
     </main>
   );

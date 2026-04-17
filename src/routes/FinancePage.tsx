@@ -121,7 +121,7 @@ export function FinancePage() {
                       </div>
                       <div className="text-xs text-ink-400">
                         {(loan.annualRate * 100).toFixed(2)}% · {loan.termMonths}mo term ·{" "}
-                        {loan.missedPaymentsThisYear > 0
+                        {(loan.missedPaymentsThisYear ?? 0) > 0
                           ? `${loan.missedPaymentsThisYear} missed YTD`
                           : "current"}
                       </div>

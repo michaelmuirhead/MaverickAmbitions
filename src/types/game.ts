@@ -144,6 +144,22 @@ export type LedgerCategory =
   | "tips"
   | "license_fee"
   | "event_marker"
+  // v0.8 new categories
+  | "cover_charge" // nightclub door / VIP
+  | "project_billing" // construction, tech_startup, gaming_studio, movie_studio, military_tech
+  | "project_cost"
+  | "vc_proceeds" // tech_startup / gaming_studio external funding
+  | "royalties" // gaming_studio DLC, movie_studio streaming residuals
+  | "box_office" // cinema ticket sales, movie_studio theatrical
+  | "concessions" // cinema candy/popcorn
+  | "insurance_billing" // hospital_clinic
+  | "malpractice_settlement" // hospital_clinic
+  | "property_management_fee" // real_estate_firm
+  | "flip_gain" // real_estate_firm flip margin
+  | "commodity_sale" // oil_gas wellhead sales
+  | "drilling_capex" // oil_gas new-well capex
+  | "gov_contract" // military_tech
+  | "rd_spend" // military_tech + tech startup R&D
   | "other";
 
 // ---------- Player ----------
@@ -206,17 +222,37 @@ export interface FamilyMember {
 // ---------- Business ----------
 
 export type BusinessTypeId =
+  // Food & hospitality
   | "corner_store"
   | "cafe"
   | "bar"
   | "restaurant"
   | "food_truck"
+  | "pizza_shop"
+  | "nightclub"
+  // Retail family (share one parameterized engine)
+  | "bookstore"
+  | "electronics_store"
+  | "florist"
+  | "supermarket"
+  | "jewelry_store"
   | "clothing_retail"
+  | "suit_store"
+  | "furniture_store"
+  // Entertainment
+  | "cinema"
+  | "movie_studio"
+  // Project-based / knowledge work
   | "tech_startup"
   | "gaming_studio"
-  | "oil_gas"
+  | "construction"
+  // Services
+  | "hospital_clinic"
   | "real_estate_firm"
+  // Heavy industry
+  | "oil_gas"
   | "military_tech"
+  // Civic scale (far-future — unimplemented)
   | "sports_team"
   | "city"
   | "state"
@@ -258,6 +294,41 @@ export interface BusinessDerived {
   riskScore: number;
 }
 
+// ---------- Region ----------
+
+/**
+ * A Region is a geographic container for Markets — e.g. "Maverick County,
+ * NY" (the v0.7.3 launch setting). Regions are the forward-looking unit
+ * that future versions will grow the map with: NYC boroughs, Long Island,
+ * and New Jersey in Phase 2; major US metros (LA County, Cook County,
+ * Miami-Dade, etc.) in Phase 3, where region-level mechanics such as
+ * sports-team ownership and political office come online. For v0.7.3 the
+ * game ships with exactly one active Region; the architecture exists so
+ * adding more is a data change rather than a refactor.
+ */
+export interface Region {
+  id: Id;
+  /** Display name, including state. e.g. "Maverick County, NY". */
+  name: string;
+  /** ISO-ish country tag. All v0.7.3 regions are "US". */
+  country: string;
+  /** Short positioning line surfaced in UI headers. */
+  tagline: string;
+  /**
+   * Long-form summary shown on a Region detail view. Multiple sentences
+   * of flavor copy establishing the setting and its geography.
+   */
+  summary: string;
+  /** Markets that live inside this region (by Market.id). */
+  marketIds: Id[];
+  /**
+   * Whether the region is playable in the current version. Only the v0.7.3
+   * launch region (`r_maverick_county_ny`) is active; Phase 2/3 entries
+   * will land here as `active: false` until their features ship.
+   */
+  active: boolean;
+}
+
 // ---------- Market ----------
 
 export interface Market {
@@ -267,6 +338,23 @@ export interface Market {
   medianIncome: Cents;
   /** 0..1 desirability multiplier that affects rent, traffic, wages. */
   desirability: number;
+  /**
+   * One-to-two-sentence flavor description surfaced in the MarketPage UI.
+   * Establishes neighborhood character within the game's setting
+   * (Maverick County, NY — a fictional county on NYC's outskirts).
+   *
+   * Optional because old saves migrated in from v0.7.2 won't carry it on
+   * the `Market` records they persisted; selectors / UI should fall back
+   * to the live `STARTER_MARKETS` description when a save's record is
+   * missing it.
+   */
+  description?: string;
+  /**
+   * The Region this market belongs to. Always populated on fresh markets
+   * and on v5 → v6 migrated saves (all pre-v0.7.3 markets retroactively
+   * belong to Maverick County).
+   */
+  regionId: Id;
   /** Business IDs operating in this market (player + rivals). */
   businessIds: Id[];
 }
@@ -420,6 +508,14 @@ export interface GameState {
   family: Record<Id, FamilyMember>;
   businesses: Record<Id, Business>;
   markets: Record<Id, Market>;
+  /**
+   * Regions containing the markets. v0.7.3 ships with exactly one active
+   * region (`r_maverick_county_ny`); Phase 2/3 will add NYC boroughs, Long
+   * Island, New Jersey, then national metros. Region-scoped mechanics
+   * (sports teams, political office) will hang off this map in later
+   * versions, which is why it is persisted per-save rather than read-only.
+   */
+  regions: Record<Id, Region>;
   rivals: Record<Id, AIRival>;
   /** All real-estate properties across every market, keyed by id. */
   properties: Record<Id, Property>;

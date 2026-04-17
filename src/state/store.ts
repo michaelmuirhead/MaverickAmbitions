@@ -4,18 +4,8 @@
  * `state/selectors.ts`.
  */
 
-"use client";
-
 import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
-import { setAutoFreeze } from "immer";
-
-// Game-engine concession: our per-business tick modules (retail/cafe/hospitality)
-// update state in-place for speed (`state.wagesAccrued += ...`). Immer's default
-// deep-freeze would turn those mutations into TypeErrors in production and
-// silently wedge the game clock. Turn it off globally. The long-term fix is to
-// make onHour/onDay/onWeek return fresh state, but this keeps v0.6 unblocked.
-setAutoFreeze(false);
 
 import type {
   Business,

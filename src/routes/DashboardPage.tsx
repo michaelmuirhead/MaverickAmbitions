@@ -5,6 +5,7 @@ import { StatTile } from "@/components/ui/StatTile";
 import { Button } from "@/components/ui/Button";
 import { ContentGrid } from "@/components/layout/ContentGrid";
 import { EventBanner } from "@/components/game/EventBanner";
+import { EventsFeed } from "@/components/game/EventsFeed";
 
 import { useGameStore } from "@/state/store";
 import {
@@ -129,19 +130,8 @@ export function DashboardPage() {
         </Card>
       </div>
 
-      <Card title="Recent activity">
-        {events.length === 0 ? (
-          <p className="text-sm text-ink-400">No events yet. Time advances when you unpause.</p>
-        ) : (
-          <ul className="space-y-3">
-            {events.map((e) => (
-              <li key={e.id} className="text-sm">
-                <div className="font-medium text-ink-50">{e.title}</div>
-                <div className="text-ink-400 text-xs">{e.detail}</div>
-              </li>
-            ))}
-          </ul>
-        )}
+      <Card title="Recent activity" subtitle="Grouped by kind · filter by severity">
+        <EventsFeed events={events} />
       </Card>
     </div>
   );

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Outlet, useNavigate } from "react-router-dom";
 
 import { ResponsiveShell } from "@/components/layout/ResponsiveShell";
+import { Tutorial } from "@/components/game/Tutorial";
 
 import { useGameStore } from "@/state/store";
 
@@ -41,6 +42,7 @@ export function GameLayout() {
   return (
     <ResponsiveShell>
       <Outlet />
+      <Tutorial />
     </ResponsiveShell>
   );
 }

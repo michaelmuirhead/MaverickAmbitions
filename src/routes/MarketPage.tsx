@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useNavigate } from "react-router-dom";
 
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
@@ -8,7 +9,11 @@ import { useGameStore } from "@/state/store";
 import { selectListingsInMarket, selectNetWorth } from "@/state/selectors";
 import { formatMoney } from "@/lib/money";
 
+import { STARTER_MARKETS } from "@/data/markets";
+import { LAUNCH_REGION_ID, STARTER_REGIONS } from "@/data/regions";
+
 import {
+  BUSINESS_TYPE_CATEGORIES,
   getAvailableBusinessTypes,
   getBusinessModule,
 } from "@/engine/business/registry";
@@ -27,19 +32,34 @@ export function MarketPage() {
   const game = useGameStore((s) => s.game)!;
   const openBusiness = useGameStore((s) => s.openBusiness);
   const buyProperty = useGameStore((s) => s.buyProperty);
+  const navigate = useNavigate();
   const [banner, setBanner] = useState<string | undefined>();
-  const types = getAvailableBusinessTypes();
-  const modules = types.map((t) => ({ type: t, mod: getBusinessModule(t) }));
+  const available = new Set(getAvailableBusinessTypes());
+  // Group into categories for scannability (22+ types per market).
+  const categorizedGroups = BUSINESS_TYPE_CATEGORIES.map((cat) => ({
+    label: cat.label,
+    modules: cat.types
+      .filter((t) => available.has(t))
+      .map((t) => ({ type: t, mod: getBusinessModule(t) })),
+  })).filter((g) => g.modules.length > 0);
   const netWorth = selectNetWorth(game);
   const playerId = game.player.id;
+  // Prefer the region record persisted on the save; fall back to the live
+  // launch region so newly-migrated saves render the tagline immediately.
+  const launchRegion =
+    game.regions?.[LAUNCH_REGION_ID] ?? STARTER_REGIONS[LAUNCH_REGION_ID];
 
   return (
     <div className="space-y-4">
       <header>
+        <div className="text-xs uppercase tracking-wide text-ink-500">
+          {launchRegion.name}
+        </div>
         <h1 className="text-2xl font-bold">Markets</h1>
         <p className="text-ink-400 text-sm mt-1">
-          Pick a neighborhood, pick a play. Cafes trade higher capex for a
-          reputation halo that boosts everything else you run here.
+          {launchRegion.tagline} Pick a neighborhood, pick a play. Cafes trade
+          higher capex for a reputation halo that boosts everything else you
+          run here.
         </p>
       </header>
 
@@ -65,12 +85,22 @@ export function MarketPage() {
         {Object.values(game.markets).map((m) => {
           const here = m.businessIds.length;
           const halo = hospitalityHalo(game, playerId, m.id);
+          // Description lives on the Market record for fresh games; older
+          // saves migrated in from v0.7.2 won't carry one, so fall back to
+          // the live STARTER_MARKETS entry.
+          const description =
+            m.description ?? STARTER_MARKETS[m.id]?.description;
           return (
             <Card
               key={m.id}
               title={m.name}
               subtitle={`Pop ${m.population.toLocaleString()} · Median ${formatMoney(m.medianIncome, { compact: true })}`}
             >
+              {description && (
+                <p className="text-xs text-ink-300 mb-2 leading-relaxed">
+                  {description}
+                </p>
+              )}
               <div className="text-xs text-ink-400 mb-3">
                 Desirability {(m.desirability * 100).toFixed(0)}% · {here}{" "}
                 business{here === 1 ? "" : "es"} operating
@@ -81,8 +111,13 @@ export function MarketPage() {
                 )}
               </div>
 
-              <div className="flex flex-col gap-2">
-                {modules.map(({ type, mod }) => {
+              <div className="flex flex-col gap-3">
+                {categorizedGroups.map((group) => (
+                  <div key={group.label} className="flex flex-col gap-1.5">
+                    <div className="text-[10px] uppercase tracking-wider text-ink-500 pl-0.5">
+                      {group.label}
+                    </div>
+                {group.modules.map(({ type, mod }) => {
                   const cost = mod.startup.startupCostCents;
                   const unlock = mod.startup.unlocksAt?.netWorthCents ?? 0;
                   const locked = netWorth < unlock;
@@ -149,13 +184,24 @@ export function MarketPage() {
                           defaultNameFor(type, m.name),
                           financing ? { financing } : undefined,
                         );
-                        if (!res.ok) setBanner(res.error);
-                        else if (res.loanId) {
-                          setBanner(
-                            `Opened a new ${mod.ui.label.toLowerCase()} in ${m.name} — financed ${formatMoney(maxBorrow, { compact: true })} at ${(rate * 100).toFixed(2)}%.`,
-                          );
+                        if (!res.ok) {
+                          setBanner(res.error);
                         } else {
-                          setBanner(`Opened a new ${mod.ui.label.toLowerCase()} in ${m.name}.`);
+                          // Jump straight to the new business's detail page so
+                          // the player can set pricing / staffing before the
+                          // first tick rolls.
+                          if (res.businessId) {
+                            navigate(`/business/${res.businessId}`);
+                          }
+                          if (res.loanId) {
+                            setBanner(
+                              `Opened a new ${mod.ui.label.toLowerCase()} in ${m.name} — financed ${formatMoney(maxBorrow, { compact: true })} at ${(rate * 100).toFixed(2)}%.`,
+                            );
+                          } else {
+                            setBanner(
+                              `Opened a new ${mod.ui.label.toLowerCase()} in ${m.name}.`,
+                            );
+                          }
                         }
                       }}
                     >
@@ -166,6 +212,8 @@ export function MarketPage() {
                     </Button>
                   );
                 })}
+                  </div>
+                ))}
               </div>
 
               {(() => {
@@ -235,7 +283,56 @@ export function MarketPage() {
 }
 
 function defaultNameFor(type: BusinessTypeId, marketName: string): string {
-  if (type === "cafe") return `${marketName} Roast`;
-  if (type === "corner_store") return `${marketName} Corner`;
-  return `${marketName} ${type}`;
+  switch (type) {
+    case "cafe":
+      return `${marketName} Roast`;
+    case "corner_store":
+      return `${marketName} Corner`;
+    case "bar":
+      return `${marketName} Tap`;
+    case "restaurant":
+      return `${marketName} Kitchen`;
+    case "food_truck":
+      return `${marketName} Truck`;
+    case "pizza_shop":
+      return `${marketName} Pies`;
+    case "nightclub":
+      return `${marketName} Lounge`;
+    case "bookstore":
+      return `${marketName} Books`;
+    case "electronics_store":
+      return `${marketName} Electronics`;
+    case "florist":
+      return `${marketName} Florist`;
+    case "supermarket":
+      return `${marketName} Market`;
+    case "jewelry_store":
+      return `${marketName} Jewelers`;
+    case "clothing_retail":
+      return `${marketName} Apparel`;
+    case "suit_store":
+      return `${marketName} Tailors`;
+    case "furniture_store":
+      return `${marketName} Furniture`;
+    case "cinema":
+      return `${marketName} Cinema`;
+    case "movie_studio":
+      return `${marketName} Pictures`;
+    case "tech_startup":
+      return `${marketName} Labs`;
+    case "gaming_studio":
+      return `${marketName} Interactive`;
+    case "construction":
+      return `${marketName} Builders`;
+    case "hospital_clinic":
+      return `${marketName} Clinic`;
+    case "real_estate_firm":
+      return `${marketName} Realty`;
+    case "oil_gas":
+      return `${marketName} Petroleum`;
+    case "military_tech":
+      return `${marketName} Defense`;
+    default:
+      return `${marketName} ${type.replace(/_/g, " ")}`;
+  }
 }
