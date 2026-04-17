@@ -149,6 +149,10 @@ export interface GenericRetailState {
   wagesAccrued: Cents;
   /** Perishable waste tracked weekly for CSAT nudges. */
   weeklyWasteUnits: number;
+  /** v0.8.1: Estimated visitors accumulated across the week. */
+  weeklyVisitorsAcc?: number;
+  /** v0.8.1: Units sold accumulated across the week (sum across SKUs). */
+  weeklyUnitsSoldAcc?: number;
 }
 
 function monthIndex(tick: Tick): number {
@@ -224,6 +228,8 @@ export function makeRetailModule(
       weeklyShrinkageAcc: 0,
       wagesAccrued: 0,
       weeklyWasteUnits: 0,
+      weeklyVisitorsAcc: 0,
+      weeklyUnitsSoldAcc: 0,
     };
 
     const kpis: BusinessKPIs = {
@@ -449,6 +455,15 @@ export function makeRetailModule(
     state.weeklyRevenueAcc += hourRevenue - returnsThisHour;
     state.weeklyCogsAcc += hourCogs;
 
+    // v0.8.1: accumulate estimated visitors + units sold so the weekly KPIs
+    // can report traffic, conversion, and revenue-per-visitor. visitorsThisHour
+    // is the realized foot traffic × visit intent rate — matches the same
+    // numerator the SKU loop uses to compute per-SKU expected units.
+    const visitorsThisHour = baseTraffic * visitRate * weekendMul;
+    state.weeklyVisitorsAcc = (state.weeklyVisitorsAcc ?? 0) + visitorsThisHour;
+    state.weeklyUnitsSoldAcc =
+      (state.weeklyUnitsSoldAcc ?? 0) + unitsSoldTotal;
+
     const newCash =
       biz.cash + hourRevenue - hourCogs - returnsThisHour - shrinkageThisHour;
 
@@ -473,10 +488,6 @@ export function makeRetailModule(
         ),
       },
     };
-
-    // Intentionally do not reference unitsSoldTotal further; retained as
-    // a local so we can evolve the KPI later without re-plumbing.
-    void unitsSoldTotal;
 
     return { business: updated, ledger: ledgerEntries, events };
   }
@@ -635,6 +646,12 @@ export function makeRetailModule(
       (Math.max(0, Math.min(92, target)) - biz.kpis.customerSatisfaction) *
         0.15;
 
+    // v0.8.1: compute weekly traffic + conversion KPIs BEFORE resetting.
+    const weeklyVisitors = Math.round(state.weeklyVisitorsAcc ?? 0);
+    const weeklyUnitsSold = Math.round(state.weeklyUnitsSoldAcc ?? 0);
+    const weeklyConversion =
+      weeklyVisitors > 0 ? weeklyUnitsSold / weeklyVisitors : 0;
+
     // Reset weekly counters.
     state.weeklyRevenueAcc = 0;
     state.weeklyCogsAcc = 0;
@@ -642,6 +659,8 @@ export function makeRetailModule(
     state.weeklyShrinkageAcc = 0;
     state.wagesAccrued = 0;
     state.weeklyWasteUnits = 0;
+    state.weeklyVisitorsAcc = 0;
+    state.weeklyUnitsSoldAcc = 0;
 
     const kpis: BusinessKPIs = {
       ...biz.kpis,
@@ -649,6 +668,9 @@ export function makeRetailModule(
       weeklyExpenses,
       weeklyProfit,
       customerSatisfaction: next,
+      weeklyVisitors,
+      weeklyUnitsSold,
+      weeklyConversion,
     };
 
     return {

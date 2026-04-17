@@ -59,6 +59,10 @@ export interface CornerStoreState {
   weeklyCogsAcc: Cents;
   /** Wages accrued this week (paid on week close). */
   wagesAccrued: Cents;
+  /** v0.8.1: estimated visitors accumulated across the week. */
+  weeklyVisitorsAcc?: number;
+  /** v0.8.1: units sold accumulated across the week. */
+  weeklyUnitsSoldAcc?: number;
 }
 
 export interface CornerStoreSku {
@@ -142,6 +146,8 @@ function createBusiness(params: {
     weeklyRevenueAcc: 0,
     weeklyCogsAcc: 0,
     wagesAccrued: 0,
+    weeklyVisitorsAcc: 0,
+    weeklyUnitsSoldAcc: 0,
   };
 
   const kpis: BusinessKPIs = {
@@ -250,6 +256,7 @@ function onHour(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
 
   let hourRevenue = 0;
   let hourCogs = 0;
+  let hourUnitsSold = 0;
 
   // Iterate SKUs: for each, a simple probabilistic sale rate.
   for (const skuId of Object.keys(state.skus) as SkuId[]) {
@@ -273,6 +280,7 @@ function onHour(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
       const cogs = Math.round(sku.cost * unitsSold * pulse.cogsMultiplier);
       hourRevenue += rev;
       hourCogs += cogs;
+      hourUnitsSold += unitsSold;
     }
   }
 
@@ -309,6 +317,11 @@ function onHour(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
 
   state.weeklyRevenueAcc += hourRevenue;
   state.weeklyCogsAcc += hourCogs;
+
+  // v0.8.1: accumulate weekly traffic + units for the conversion KPI.
+  const visitorsThisHour = traffic * visitRate;
+  state.weeklyVisitorsAcc = (state.weeklyVisitorsAcc ?? 0) + visitorsThisHour;
+  state.weeklyUnitsSoldAcc = (state.weeklyUnitsSoldAcc ?? 0) + hourUnitsSold;
 
   const newCash = biz.cash + hourRevenue - hourCogs; // wages paid weekly
 
@@ -469,10 +482,18 @@ function onWeek(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
 
   const weeklyProfit = weeklyProfitPretax - tax;
 
+  // v0.8.1: compute weekly traffic/conversion KPIs BEFORE resetting.
+  const weeklyVisitors = Math.round(state.weeklyVisitorsAcc ?? 0);
+  const weeklyUnitsSold = Math.round(state.weeklyUnitsSoldAcc ?? 0);
+  const weeklyConversion =
+    weeklyVisitors > 0 ? weeklyUnitsSold / weeklyVisitors : 0;
+
   // Reset weekly counters.
   state.weeklyRevenueAcc = 0;
   state.weeklyCogsAcc = 0;
   state.wagesAccrued = 0;
+  state.weeklyVisitorsAcc = 0;
+  state.weeklyUnitsSoldAcc = 0;
 
   const kpis: BusinessKPIs = {
     ...biz.kpis,
@@ -488,6 +509,9 @@ function onWeek(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
           ctx.rng.nextFloat(-1, 1),
       ),
     ),
+    weeklyVisitors,
+    weeklyUnitsSold,
+    weeklyConversion,
   };
 
   return {
