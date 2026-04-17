@@ -66,7 +66,7 @@ export function newGame(opts: NewGameOptions = {}): GameState {
   }
 
   return {
-    version: 2,
+    version: 3,
     seed,
     clock: { tick: 0, lastStepAt: Date.now(), speed: 1 },
     macro,
@@ -77,6 +77,7 @@ export function newGame(opts: NewGameOptions = {}): GameState {
     rivals,
     properties,
     mortgages: {},
+    businessLoans: {},
     ledger: [],
     events: [],
     activeEvents: [],

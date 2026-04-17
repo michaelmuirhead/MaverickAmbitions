@@ -72,6 +72,8 @@ export interface Loan {
   propertyId?: Id;
   /** For mortgages. The down payment actually paid up front. */
   downPaymentCents?: Cents;
+  /** For business loans. Links back to the Business this loan financed. */
+  businessId?: Id;
   /** Per-loan payment history flag (last N months). Used to nudge credit. */
   missedPaymentsThisYear?: number;
 }
@@ -135,6 +137,9 @@ export type LedgerCategory =
   | "property_maintenance"
   | "mortgage_interest"
   | "mortgage_principal"
+  | "business_loan_proceeds"
+  | "business_loan_interest"
+  | "business_loan_principal"
   | "rent_income"
   | "tips"
   | "license_fee"
@@ -420,6 +425,8 @@ export interface GameState {
   properties: Record<Id, Property>;
   /** All outstanding mortgages (player + rival), keyed by loan id. */
   mortgages: Record<Id, Loan>;
+  /** All outstanding business-startup loans (v0.5.1), keyed by loan id. */
+  businessLoans: Record<Id, Loan>;
   ledger: LedgerEntry[];
   events: GameEvent[];
   /** Currently-active macro events (pulse effects applied to macro signals). */

@@ -7,7 +7,7 @@
 
 import type { GameState } from "@/types/game";
 
-export const CURRENT_SAVE_VERSION = 2;
+export const CURRENT_SAVE_VERSION = 3;
 
 type MigrationFn = (state: unknown) => unknown;
 
@@ -21,6 +21,18 @@ const MIGRATIONS: Record<number, MigrationFn> = {
       version: 2,
       activeEvents: Array.isArray(obj.activeEvents) ? obj.activeEvents : [],
       eventHistory: Array.isArray(obj.eventHistory) ? obj.eventHistory : [],
+    };
+  },
+  // v2 -> v3: v0.5.1 small-business credit. Seed empty businessLoans map.
+  2: (s) => {
+    const obj = (s as Record<string, unknown>) ?? {};
+    return {
+      ...obj,
+      version: 3,
+      businessLoans:
+        obj.businessLoans && typeof obj.businessLoans === "object"
+          ? obj.businessLoans
+          : {},
     };
   },
 };

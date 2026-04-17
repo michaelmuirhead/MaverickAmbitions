@@ -34,6 +34,7 @@ import { getBusinessModule } from "./business/registry";
 import { advanceMacro } from "./economy/cycles";
 import { ECONOMY } from "./economy/constants";
 import { resetYearlyMissedPayments, runMonthlySettlement } from "./economy/realEstate";
+import { runMonthlyBusinessLoanPayments } from "./economy/businessLoan";
 import { emitGameEvent } from "./events/eventBus";
 import { rollRandomEvent } from "./events/randomEvents";
 import { agePlayer, ageFamilyMember, MAX_AGE } from "./family/aging";
@@ -82,6 +83,7 @@ export function stepTick(state: GameState): GameState {
   let rivalsState = state.rivals;
   let properties = state.properties;
   let mortgages = state.mortgages;
+  let businessLoans = state.businessLoans ?? {};
 
   const worldSnapshot: GameState = {
     ...state,
@@ -247,6 +249,24 @@ export function stepTick(state: GameState): GameState {
     mortgages = afterMonth.mortgages;
     businesses = afterMonth.businesses;
     ledger = appendLedger(ledger, monthLedger);
+
+    // 5c. Business-loan settlement — pay this month's installment on every
+    // outstanding player business loan. Draws biz cash first, personal as
+    // fallback. Missed → credit ding, balance untouched for retry next month.
+    const workingAfterRE: GameState = {
+      ...working,
+      player: monthlyPlayer,
+      businesses,
+      rivals: rivalsState,
+      properties,
+      mortgages,
+      businessLoans,
+    };
+    const bLoanRes = runMonthlyBusinessLoanPayments(workingAfterRE, tick);
+    monthlyPlayer = bLoanRes.player;
+    businesses = bLoanRes.businesses;
+    businessLoans = bLoanRes.businessLoans;
+    ledger = appendLedger(ledger, bLoanRes.ledger);
   }
 
   // 6. Yearly: age everyone.
@@ -272,6 +292,7 @@ export function stepTick(state: GameState): GameState {
     rivals: rivalsState,
     properties,
     mortgages,
+    businessLoans,
     ledger: ledger.slice(-5000), // cap ledger to last 5k entries for MVP
     events: events.slice(-200), // cap in-memory events
     activeEvents,

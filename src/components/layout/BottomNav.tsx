@@ -1,7 +1,4 @@
-"use client";
-
-import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { Link, useLocation } from "react-router-dom";
 
 import { cn } from "@/lib/cn";
 
@@ -12,7 +9,7 @@ import { NAV_ITEMS } from "./nav-items";
  * Uses iOS-style safe-area padding.
  */
 export function BottomNav() {
-  const pathname = usePathname();
+  const { pathname } = useLocation();
   return (
     <nav
       aria-label="Primary"
@@ -24,7 +21,7 @@ export function BottomNav() {
           return (
             <li key={item.href} className="flex">
               <Link
-                href={item.href}
+                to={item.href}
                 className={cn(
                   "flex flex-col items-center justify-center gap-0.5 w-full py-2 text-[10px] font-medium",
                   active ? "text-accent" : "text-ink-400 hover:text-ink-100",

@@ -1,7 +1,4 @@
-"use client";
-
-import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { Link, useLocation } from "react-router-dom";
 
 import { cn } from "@/lib/cn";
 
@@ -12,7 +9,7 @@ import { NAV_ITEMS } from "./nav-items";
  * the iPhone tab bar stretched sideways.
  */
 export function SideNav({ expanded = false }: { expanded?: boolean }) {
-  const pathname = usePathname();
+  const { pathname } = useLocation();
   return (
     <aside
       className={cn(
@@ -35,7 +32,7 @@ export function SideNav({ expanded = false }: { expanded?: boolean }) {
             return (
               <li key={item.href}>
                 <Link
-                  href={item.href}
+                  to={item.href}
                   className={cn(
                     "flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium",
                     active

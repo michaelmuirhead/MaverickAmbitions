@@ -1,18 +1,16 @@
-import type { Route } from "next";
-
 export interface NavItem {
-  href: Route;
+  href: string;
   label: string;
   shortLabel: string;
   icon: string;
 }
 
 export const NAV_ITEMS: NavItem[] = [
-  { href: "/dashboard" as Route, label: "Dashboard", shortLabel: "Home", icon: "📊" },
-  { href: "/business" as Route, label: "Business", shortLabel: "Biz", icon: "🏪" },
-  { href: "/market" as Route, label: "Market", shortLabel: "Market", icon: "🗺️" },
-  { href: "/finance" as Route, label: "Finance", shortLabel: "Finance", icon: "🏦" },
-  { href: "/rivals" as Route, label: "Rivals", shortLabel: "Rivals", icon: "⚔️" },
-  { href: "/family" as Route, label: "Family", shortLabel: "Family", icon: "👪" },
-  { href: "/settings" as Route, label: "Settings", shortLabel: "More", icon: "⚙️" },
+  { href: "/dashboard", label: "Dashboard", shortLabel: "Home", icon: "📊" },
+  { href: "/business", label: "Business", shortLabel: "Biz", icon: "🏪" },
+  { href: "/market", label: "Market", shortLabel: "Market", icon: "🗺️" },
+  { href: "/finance", label: "Finance", shortLabel: "Finance", icon: "🏦" },
+  { href: "/rivals", label: "Rivals", shortLabel: "Rivals", icon: "⚔️" },
+  { href: "/family", label: "Family", shortLabel: "Family", icon: "👪" },
+  { href: "/settings", label: "Settings", shortLabel: "More", icon: "⚙️" },
 ];

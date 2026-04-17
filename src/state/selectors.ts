@@ -7,6 +7,7 @@ import {
   mortgageRate,
   type CreditBand,
 } from "@/engine/economy/realEstate";
+import { playerBusinessLoanDebt } from "@/engine/economy/businessLoan";
 import { getEventBanners, type EventBanner } from "@/engine/macro/events";
 
 export function selectNetWorth(state: GameState): Cents {
@@ -15,7 +16,13 @@ export function selectNetWorth(state: GameState): Cents {
     .filter((b) => b.ownerId === state.player.id)
     .reduce((acc, b) => acc + b.cash, 0);
   const realEstate = selectPlayerRealEstateEquity(state);
-  return personal + bizCash + realEstate;
+  const businessLoanDebt = selectPlayerBusinessLoanDebt(state);
+  return personal + bizCash + realEstate - businessLoanDebt;
+}
+
+/** Outstanding business-loan principal the player is carrying. */
+export function selectPlayerBusinessLoanDebt(state: GameState): Cents {
+  return playerBusinessLoanDebt(state);
 }
 
 /** Current market equity in all player-owned properties (value minus mortgage balance). */

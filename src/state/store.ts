@@ -27,6 +27,7 @@ import {
   originateMortgage,
   refinanceMortgage,
 } from "@/engine/economy/realEstate";
+import { originateBusinessLoan } from "@/engine/economy/businessLoan";
 import { forceActivate } from "@/engine/macro/events";
 import { dollars } from "@/lib/money";
 import { selectNetWorth } from "./selectors";
@@ -42,13 +43,16 @@ interface GameActions {
   tick: () => void;
   /** Change game speed. */
   setSpeed: (s: GameSpeed) => void;
-  /** Open a business of any registered type at a given market. Enforces unlock + cash gates. */
+  /** Open a business of any registered type at a given market. Enforces unlock + cash gates.
+   * If `opts.financing.borrowCents` is set, an SBA-style business loan is originated
+   * for that amount (credit-gated, capped by LTC). The player covers the remainder
+   * from personal cash; the borrowed principal is added to the new business's cash. */
   openBusiness: (
     type: BusinessTypeId,
     marketId: Id,
     name: string,
-    opts?: { propertyId?: Id },
-  ) => { ok: boolean; error?: string; businessId?: Id };
+    opts?: { propertyId?: Id; financing?: { borrowCents: Cents } },
+  ) => { ok: boolean; error?: string; businessId?: Id; loanId?: Id };
   /** Open a corner store at a given market. Kept as a convenience for existing callers. */
   openCornerStore: (marketId: Id, name: string) => { ok: boolean; error?: string; businessId?: Id };
   /** Buy a listed property. Originates a mortgage if down payment < list. */
@@ -152,12 +156,26 @@ export const useGameStore = create<GameStore>()(
         return { ok: false, error: `Business type '${type}' not implemented yet.` };
       }
       const cost = mod.startup.startupCostCents;
-      if (g.player.personalCash < cost) {
+
+      // --- Financing path: validate up front before any state mutation ---
+      const borrowCents = opts?.financing?.borrowCents ?? 0;
+      const downPayment = cost - borrowCents;
+      if (borrowCents < 0 || borrowCents > cost) {
+        return { ok: false, error: "Invalid financing amount." };
+      }
+      if (g.player.personalCash < downPayment) {
+        if (borrowCents > 0) {
+          return {
+            ok: false,
+            error: `Need $${Math.round(downPayment / 100).toLocaleString()} personal cash as down payment (after $${Math.round(borrowCents / 100).toLocaleString()} financing).`,
+          };
+        }
         return {
           ok: false,
           error: `Need $${Math.round(cost / 100).toLocaleString()} in personal cash to open.`,
         };
       }
+
       const unlockNetWorth = mod.startup.unlocksAt?.netWorthCents;
       if (unlockNetWorth !== undefined) {
         const nw = selectNetWorth(g);
@@ -186,7 +204,28 @@ export const useGameStore = create<GameStore>()(
         }
       }
 
+      // Origination must happen before commit — we need to know if the
+      // loan would even be approved, or fall back to a clean error return.
       const id = nanoid(8);
+      let loanId: Id | undefined;
+      const loanResult = borrowCents > 0
+        ? originateBusinessLoan({
+            id: nanoid(8),
+            businessId: id,
+            startupCostCents: cost,
+            borrowCents,
+            creditScore: g.player.creditScore,
+            macro: g.macro,
+            tick: g.clock.tick,
+          })
+        : undefined;
+      if (loanResult && !loanResult.ok) {
+        return { ok: false, error: loanResult.error ?? "Loan denied." };
+      }
+      if (loanResult && loanResult.loan) {
+        loanId = loanResult.loan.id;
+      }
+
       const biz = mod.create({
         id,
         ownerId: g.player.id,
@@ -195,9 +234,16 @@ export const useGameStore = create<GameStore>()(
         tick: g.clock.tick,
         seed: g.seed,
       });
+      // Loan proceeds go into business operating cash on top of its
+      // default float — this is the realistic SBA flow and prevents
+      // instant cash-starvation in month 1.
+      if (loanResult && loanResult.loan) {
+        biz.cash += loanResult.loan.principal;
+      }
+
       set((s) => {
         if (!s.game) return;
-        s.game.player.personalCash -= cost;
+        s.game.player.personalCash -= downPayment;
         // If this business sits on an owned property, suppress its rent draw
         // and link both directions so monthly settlement can find it.
         if (propertyId) {
@@ -208,9 +254,20 @@ export const useGameStore = create<GameStore>()(
         }
         s.game.businesses[id] = biz;
         s.game.markets[marketId]!.businessIds.push(id);
+        if (loanResult && loanResult.loan) {
+          s.game.businessLoans[loanResult.loan.id] = loanResult.loan;
+          s.game.ledger.push({
+            id: `bloan-open-${loanResult.loan.id}-${s.game.clock.tick}`,
+            tick: s.game.clock.tick,
+            amount: loanResult.loan.principal,
+            category: "business_loan_proceeds",
+            memo: `Business loan: ${mod.ui.label} @ ${(loanResult.loan.annualRate * 100).toFixed(2)}%`,
+            businessId: id,
+          });
+        }
       });
       void dollars; // keep money helper import alive
-      return { ok: true, businessId: id };
+      return { ok: true, businessId: id, loanId };
     },
 
     openCornerStore: (marketId, name) => {
