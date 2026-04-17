@@ -228,12 +228,15 @@ A single `ResponsiveShell` reads the current breakpoint and renders the right ch
 
 ## 11. Tech stack
 
-- **Next.js 14** App Router + TypeScript, deployed to **Vercel**
-- **Tailwind** for styling
+- **Vite 5** + **React 18** + TypeScript, deployed as a static bundle to any host
+- **React Router 6** using `createHashRouter` — `#/dashboard` deep links work on GitHub Pages / S3 / nginx with zero rewrite rules
+- **Tailwind** for styling (PostCSS pipeline, untouched by the Vite migration)
 - **Zustand** + **Immer** for state (client-side, works offline, no server required)
 - **date-fns** for time math
 - **nanoid** for stable IDs
 - All game logic is pure TypeScript and unit-testable independent of React.
+
+> Historical note: v0.1 through v0.5.1 ran on Next 14 App Router. In v0.6 we moved to Vite specifically for deploy simplicity — the game has no server-side anything (no SSR, no API routes, no middleware), so paying the Next runtime cost bought us nothing, while HashRouter + static `dist/` works on any host.
 
 ---
 
@@ -241,8 +244,10 @@ A single `ResponsiveShell` reads the current breakpoint and renders the right ch
 
 ```
 src/
-├── app/                  # Next routes (App Router)
-│   └── (game)/*          # Authenticated game routes
+├── App.tsx               # Route table (createHashRouter + RouterProvider)
+├── main.tsx              # Vite entry (createRoot into #root)
+├── styles.css            # Tailwind directives + iOS safe-area
+├── routes/               # One file per page (DashboardPage, BusinessPage, …)
 ├── components/
 │   ├── layout/           # Responsive shell, nav, topbar
 │   ├── ui/               # Primitives (Card, Button, StatTile)
@@ -262,7 +267,7 @@ src/
 └── types/                # Shared types
 ```
 
-**Golden rule:** the `engine/` folder must never import from `components/` or `app/`. This keeps game logic testable and portable (e.g. server-side AI simulation later).
+**Golden rule:** the `engine/` folder must never import from `components/` or `routes/`. This keeps game logic testable and portable (e.g. server-side AI simulation later).
 
 ---
 
@@ -299,12 +304,34 @@ src/
 - Banner UI on dashboard + force-activate debug console
 - Business modules read `getPulseBundle` for COGS / traffic / license bites
 
-### v0.6 — Industries (next)
+### v0.5.1 — Small-business credit ✅
+- **Problem:** Starter cash is $15K; cheapest business costs $35K. Players soft-locked before the first tick.
+- **Fix:** SBA 7(a)-style business loans mirroring the mortgage infrastructure.
+- Credit-banded loan-to-cost caps: 85% (exceptional) / 80% (good) / 75% (fair) / 70% (subprime 660+) / 0% (deep subprime).
+- Base SBA rate = macro interest rate + 2.5pp; credit spread adds 0–4pp.
+- 60-month amortization, personally guaranteed (debt survives business closure).
+- Payments draw business-cash-first, personal-fallback; missed payment = credit ding (−35).
+- Market UI renders Finance button when cash short but credit qualifies.
+- Finance page shows "Business debt" tile + per-loan cards (rate, term, balance, paid-down %).
+- Save format bumped v2→v3 with zero-migration default (`businessLoans: {}`).
+- Smoke test: `npm run smoke:business-loans`.
+
+### v0.6 — Vite + React Router ✅
+- **Problem:** Next 14 App Router + "use client" pragmas + Vercel-assumed deploy = friction for a pure client-side app with no SSR/API needs.
+- **Fix:** Migrated to Vite + React Router (HashRouter), keeping every line of engine/state/components code intact.
+- New entry surface: `index.html` → `src/main.tsx` → `src/App.tsx` (route table) → `src/routes/*`.
+- `createHashRouter` chosen over `createBrowserRouter` for deploy simplicity — any static host serves `#/dashboard` deep links without URL-rewrite rules.
+- Vite config uses `base: "./"` so builds work from subpaths (GitHub Pages, nested CDN mounts).
+- Dropped: `next`, `next/link`, `next/navigation`, `useRouter`, `usePathname`, `Route` type, `src/app/`, `next.config.mjs`, `next-env.d.ts`.
+- tsconfig switched `jsx: "preserve"` → `"react-jsx"`; dropped the `next` TS plugin.
+- All 7 game routes + home + new-game ported 1:1; nav components swapped to `Link from react-router-dom` + `useLocation().pathname`.
+
+### v0.7 — Industries (next)
 - Tech startup module (projects instead of SKUs, devs instead of clerks)
 - Cross-business holding-company view
 - Acquisition / divestiture mechanics (buy a rival's shop, be bought out)
 
-### v0.7+ — Empire
+### v0.8+ — Empire
 - Sports teams (roster + season), cities (tax base, elections), political influence
 - Media & reputation system, lawsuits, scandals
 - 3–5 rivals with coordinated behavior + memory of player moves
