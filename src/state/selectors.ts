@@ -9,13 +9,54 @@ import { playerBusinessLoanDebt } from "@/engine/economy/businessLoan";
 import { getEventBanners, type EventBanner } from "@/engine/macro/events";
 
 export function selectNetWorth(state: GameState): Cents {
-  const personal = state.player.personalCash;
-  const bizCash = Object.values(state.businesses)
+  const b = selectWealthBreakdown(state);
+  return b.personalCash + b.businessCash + b.realEstateEquity - b.totalDebt;
+}
+
+/**
+ * Full asset/liability breakdown for the player — the numbers behind net
+ * worth. Used by the Dashboard "Where your money is" card so the player
+ * can see liquid vs. trapped vs. illiquid at a glance.
+ */
+export interface WealthBreakdown {
+  personalCash: Cents;
+  businessCash: Cents;
+  realEstateEquity: Cents;
+  mortgageDebt: Cents;
+  businessLoanDebt: Cents;
+  /** Mortgage + business-loan debt. */
+  totalDebt: Cents;
+  /** Sum of the positive-sign assets (before subtracting debt). */
+  grossAssets: Cents;
+  /** Net worth = grossAssets - totalDebt. */
+  netWorth: Cents;
+}
+
+export function selectWealthBreakdown(state: GameState): WealthBreakdown {
+  const personalCash = state.player.personalCash;
+  const businessCash = selectPlayerBusinessCashTotal(state);
+  const realEstateEquity = selectPlayerRealEstateEquity(state);
+  const mortgageDebt = selectPlayerMortgageDebt(state);
+  const businessLoanDebt = selectPlayerBusinessLoanDebt(state);
+  const totalDebt = mortgageDebt + businessLoanDebt;
+  const grossAssets = personalCash + businessCash + realEstateEquity;
+  return {
+    personalCash,
+    businessCash,
+    realEstateEquity,
+    mortgageDebt,
+    businessLoanDebt,
+    totalDebt,
+    grossAssets,
+    netWorth: grossAssets - totalDebt,
+  };
+}
+
+/** Sum of cash trapped inside all player-owned businesses. */
+export function selectPlayerBusinessCashTotal(state: GameState): Cents {
+  return Object.values(state.businesses)
     .filter((b) => b.ownerId === state.player.id)
     .reduce((acc, b) => acc + b.cash, 0);
-  const realEstate = selectPlayerRealEstateEquity(state);
-  const businessLoanDebt = selectPlayerBusinessLoanDebt(state);
-  return personal + bizCash + realEstate - businessLoanDebt;
 }
 
 /** Outstanding business-loan principal the player is carrying. */

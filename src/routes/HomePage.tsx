@@ -43,7 +43,7 @@ export function HomePage() {
           </Link>
         </div>
         <p className="mt-8 text-xs text-ink-500">
-          v0.7.3 — Maverick County, NY
+          v0.8.0 — Maverick County, NY
         </p>
       </div>
     </main>

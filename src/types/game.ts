@@ -281,6 +281,17 @@ export interface BusinessKPIs {
   weeklyProfit: Cents;
   marketShare: number; // 0..1 in its local market
   customerSatisfaction: number; // 0..100
+
+  // v0.8.1 traffic & conversion instrumentation. Optional because not every
+  // business-type engine reports them yet — storefront engines (retail,
+  // retailBase) write them each onWeek; project-based / service engines
+  // leave them undefined so the UI can show "not tracked for this type."
+  /** Total estimated visitors who entered during the completed week. */
+  weeklyVisitors?: number;
+  /** Total units sold (sum across all SKUs) during the completed week. */
+  weeklyUnitsSold?: number;
+  /** Conversion rate 0..1 — unitsSold / visitors for the completed week. */
+  weeklyConversion?: number;
 }
 
 export interface BusinessDerived {

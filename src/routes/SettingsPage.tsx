@@ -89,10 +89,11 @@ export function SettingsPage() {
           simulation set in <strong>Maverick County, NY</strong> — a fictional
           booming county on the outskirts of New York City. You start as a
           24-year-old with $15,000 and build an empire that outlasts you.
-          This is v0.7.3 — the Maverick County, NY rebrand: per-neighborhood
-          flavor, a Region data model, and the forward-looking architecture
-          for Phase 2 (NYC boroughs, Long Island, NJ) and Phase 3 (national
-          metros). See DESIGN.md in the repo for what ships next.
+          This is v0.8.0 — the business scale update: 22 business types
+          across six categories (Food & Hospitality, Retail, Entertainment,
+          Services, Project-based, and Heavy Industry), shared retail and
+          project engines, and new ledger categories to match. See DESIGN.md
+          in the repo for what ships next.
         </p>
       </Card>
     </div>

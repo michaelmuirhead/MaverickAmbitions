@@ -6,26 +6,29 @@ import { Button } from "@/components/ui/Button";
 import { ContentGrid } from "@/components/layout/ContentGrid";
 import { EventBanner } from "@/components/game/EventBanner";
 import { EventsFeed } from "@/components/game/EventsFeed";
+import { WealthBreakdownCard } from "@/components/game/WealthBreakdownCard";
 
 import { useGameStore } from "@/state/store";
 import {
   selectActiveEvents,
   selectMacroBanners,
-  selectNetWorth,
   selectPlayerBusinesses,
+  selectPlayerProperties,
   selectRivalsLeaderboard,
+  selectWealthBreakdown,
   selectWeeklyPL,
 } from "@/state/selectors";
 import { formatMoney } from "@/lib/money";
 
 export function DashboardPage() {
   const game = useGameStore((s) => s.game)!;
-  const netWorth = selectNetWorth(game);
+  const wealth = selectWealthBreakdown(game);
   const pl = selectWeeklyPL(game);
   const events = selectActiveEvents(game);
   const macroBanners = selectMacroBanners(game);
   const rivals = selectRivalsLeaderboard(game);
   const bizs = selectPlayerBusinesses(game);
+  const props = selectPlayerProperties(game);
 
   return (
     <div className="space-y-4 sm:space-y-6">
@@ -43,8 +46,8 @@ export function DashboardPage() {
       <ContentGrid>
         <StatTile
           label="Net worth"
-          value={formatMoney(netWorth, { compact: true })}
-          hint={`Personal ${formatMoney(game.player.personalCash, { compact: true })}`}
+          value={formatMoney(wealth.netWorth, { compact: true })}
+          hint={`Personal ${formatMoney(wealth.personalCash, { compact: true })}`}
         />
         <StatTile
           label="Weekly P&L"
@@ -63,6 +66,12 @@ export function DashboardPage() {
           hint={`Dynasty gen ${game.dynasty.generations}`}
         />
       </ContentGrid>
+
+      <WealthBreakdownCard
+        breakdown={wealth}
+        businessCount={bizs.length}
+        propertyCount={props.length}
+      />
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <Card
