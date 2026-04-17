@@ -1,0 +1,11 @@
+{
+  "name": "Maverick Ambitions",
+  "short_name": "Maverick",
+  "description": "A generational business simulation. Build an empire. Raise heirs. Outlast your rivals.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#070a14",
+  "theme_color": "#0f1320",
+  "orientation": "any",
+  "icons": []
+}
