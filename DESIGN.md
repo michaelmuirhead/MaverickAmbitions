@@ -2,6 +2,8 @@
 
 A deep, generational business simulation. The player starts with a single corner store and builds an empire across industries, eventually buying sports teams, running cities, and passing the dynasty to their heirs. Designed iPhone-first, adaptive to iPad and Desktop.
 
+**Setting.** v0.8.0 ships with a single playable Region: **Maverick County, NY** — a fictional booming county on the outskirts of New York City. 46 neighborhoods span a mini-Manhattan downtown, Westchester/Nassau-flavored suburbs, a Long Island-adjacent coastal strip, Catskills-adjacent upstate hamlets, and a NY Harbor-style industrial / port belt. The Region is the forward-looking unit the map grows by — Phase 2 adds NYC proper, Long Island, and New Jersey; Phase 3 opens the rest of the country, where region-level mechanics (sports-team ownership, political office) come online. See §13 for the full roadmap.
+
 ---
 
 ## 1. Design pillars
@@ -135,9 +137,18 @@ The corner store MVP has:
 - **Marketing**: local flyer, social, loyalty program
 - **Risks**: theft, health inspection, price war
 
-The same interfaces will later carry: gaming studio (projects instead of SKUs, devs instead of clerks), oil/gas (wells, crews), real estate (units, tenants), and sports teams (roster, season schedule).
+As of v0.8.0 the registry carries **22 business types** across 6 categories (see `src/engine/business/registry.ts`):
 
-See `src/engine/business/registry.ts`.
+- **Food & Hospitality (7)** — `corner_store`, `cafe`, `bar`, `restaurant`, `pizza_shop`, `food_truck`, `nightclub`.
+- **Retail (8)** — `bookstore`, `electronics_store`, `florist`, `supermarket`, `jewelry_store`, `clothing_retail`, `suit_store`, `furniture_store`. All 8 are built on a shared retail engine (`retailBase.ts`) parameterized with SKU lists, elasticity coefficients, restock cadence, and staff roster — the concrete module files are thin configs.
+- **Entertainment (2)** — `cinema` (multi-screen, 28-day film lifetime decay, concession attach rate, streaming pressure), `movie_studio` (long-cycle productions, 104-week streaming tail, `box_office` ledger).
+- **Services (2)** — `hospital_clinic` (24/7, clinician-ratio throttling, copay immediate + delayed insurance billing, malpractice risk), `real_estate_firm` (flip + manage portfolio, monthly rent collection, appreciation drift, `flip_gain` / `property_management_fee` ledgers).
+- **Project-based (3)** — `tech_startup`, `gaming_studio`, `construction` — all share `projectBase.ts`. Configs differ by project-duration range, budget range, burn ratio, concurrency cap, and residuals. Tech startup layers a VC raise overlay on `onWeek`; gaming studio carries a 52-week royalty tail; construction has no residual tail.
+- **Heavy Industry (2)** — `oil_gas` (per-well production + weekly decline, spot-price random walk, drilling capex with hit/dry-hole outcomes), `military_tech` (uses `projectBase` with `gov_contract` billing + `rd_spend` cost ledgers, 2 concurrent programs, 26–52 week durations).
+
+Ledger categories added in v0.8: `cover_charge`, `project_billing`, `project_cost`, `vc_proceeds`, `royalties`, `box_office`, `concessions`, `insurance_billing`, `malpractice_settlement`, `property_management_fee`, `flip_gain`, `commodity_sale`, `drilling_capex`, `gov_contract`, `rd_spend`. Grand-strategy dashboards can now cleanly separate private vs. public revenue, one-shot vs. recurring income, and operating expense vs. capital expenditure.
+
+The registry also exports `BUSINESS_TYPE_CATEGORIES` for UI grouping — the MarketPage button grid renders category headers instead of a flat list so 22 types stay scannable.
 
 ---
 
@@ -316,22 +327,110 @@ src/
 - Save format bumped v2→v3 with zero-migration default (`businessLoans: {}`).
 - Smoke test: `npm run smoke:business-loans`.
 
-### v0.6 — Vite + React Router ✅
-- **Problem:** Next 14 App Router + "use client" pragmas + Vercel-assumed deploy = friction for a pure client-side app with no SSR/API needs.
-- **Fix:** Migrated to Vite + React Router (HashRouter), keeping every line of engine/state/components code intact.
+### v0.6 — Vite migration, hardened ✅
+- **Problem:** Next 14 App Router + "use client" pragmas + Vercel-assumed deploy = friction for a pure client-side app with no SSR/API needs. The initial Vite cut also carried forward two subtle bugs: business tick modules mutated their frozen input state (clock-freeze on live after buying a store), and `useGameTick` re-subscribed its interval on every tick.
+- **Fix — migration:** Vite + React Router (HashRouter), keeping every line of engine/state/components code intact.
 - New entry surface: `index.html` → `src/main.tsx` → `src/App.tsx` (route table) → `src/routes/*`.
 - `createHashRouter` chosen over `createBrowserRouter` for deploy simplicity — any static host serves `#/dashboard` deep links without URL-rewrite rules.
 - Vite config uses `base: "./"` so builds work from subpaths (GitHub Pages, nested CDN mounts).
 - Dropped: `next`, `next/link`, `next/navigation`, `useRouter`, `usePathname`, `Route` type, `src/app/`, `next.config.mjs`, `next-env.d.ts`.
 - tsconfig switched `jsx: "preserve"` → `"react-jsx"`; dropped the `next` TS plugin.
 - All 7 game routes + home + new-game ported 1:1; nav components swapped to `Link from react-router-dom` + `useLocation().pathname`.
+- **Fix — engine purity:** The retail / cafe / bar / restaurant tick modules all share a single `getState(biz)` helper. In v0.6 that helper deep-clones `biz.state` (`structuredClone`) so the downstream in-place mutations land on a fresh tree. The returned `Business` packages the mutated clone back up. Result: `stepTick` is now truly pure, and immer's default deep-freeze is no longer a landmine. The `setAutoFreeze(false)` band-aid that was added to silence the mutation errors has been removed.
+- **Fix — `useGameTick`:** Removed the full `game` reference from both effect dep arrays. The interval effect now watches only `hasGame`, `speed`, `intervalMs`, and `tick`; the autosave effect watches only `tickCount` / `hasGame` / `autoSave`. Previously the interval was being torn down and rebuilt on every tick, which raced with the next scheduled callback.
+- **Fix — `"use client"` cleanup:** Stripped the leftover Next.js pragma from 11 files (selectors, store, hooks, components, routes). No behavioral change; just noise removal.
+- **Regression canary:** `npm run smoke:purchase-tick` runs 48 ticks with an owned store against a fully deep-frozen state and asserts wages accrue, revenue is booked, and the input state reference is untouched. Wired into the main `smoke` script ahead of the other suites.
 
-### v0.7 — Industries (next)
-- Tech startup module (projects instead of SKUs, devs instead of clerks)
-- Cross-business holding-company view
-- Acquisition / divestiture mechanics (buy a rival's shop, be bought out)
+### v0.7 — Player agency ✅
+The simulation was deep; the *UI surface* was thin. A player could buy a business but couldn't price a SKU, could see a staff line but couldn't hire or fire, could see a marketing score but couldn't adjust spend from the screen they were on. v0.7 closes that gap end-to-end before any new industries.
+- **Business detail page.** `/business/:id` with Overview / Inventory / Staff / Marketing / Finance tabs wired to the existing `patchBusinessState` action. Entry point is a compact summary card on `/business` (now a list that links into each detail page) and a post-purchase redirect from Market that navigates straight to the newly-opened business so the player can set pricing / staff before the first tick rolls.
+- **Per-SKU pricing.** 5% slider around `referencePrice` (range `[-30%, +50%]` — enough headroom to test gouging without collapsing elasticity to the 0.2 floor). Live preview shows unit margin (`price − cost`) and the `priceAttractiveness` multiplier color-coded emerald / neutral / loss.
+- **Hire / fire / wage controls.** StaffTab normalizes the four heterogeneous staff shapes (corner store clerks use `skill`, cafe / bar / restaurant crews use `craft`) behind a `RosterView` abstraction. Applicant pool is deterministic (`createRng(\`${biz.id}:applicants:${nonce}\`)`). Firing dings remaining crew morale by 8; above-band wages (>110% of `ECONOMY.BASE_HOURLY_WAGE_CENTS`) give +4 morale to the whole crew; ±$1/hr wage adjustments shift morale proportionally.
+- **Marketing budget UI.** $0–$2,000/wk slider in $50 steps with quick-preset buttons and an 8-week forecast bar chart computed from the live per-type decay formula (`score_{t+1} = score_t × decayMul + min(1, spend/decayRef) × (1 − decayMul)` — `decayRef = $400` for corner stores, `$500` for hospitality; `decayMul = 0.6` / `0.65`).
+- **First-time tutorial overlay.** Six-step coach mark — pick a market → open a business → advance time → watch weekly profit → open the detail page → build the dynasty. Seen flag lives in `localStorage` (`ma:tutorial:v0.7`) so game state stays pure. Replay entry in Settings.
+- **Events feed upgrade.** Events are grouped by `kind` (Business / Macro / Rivals / Personal / Family / Audit / Milestones) with filter pills, a "Major only" severity toggle (derived from `|cashDelta| ≥ $500` or `|reputationDelta| ≥ 3`), per-event dismiss, and a per-group "Dismiss all" batch action.
+- **Regression:** Full smoke suite (`purchase-tick`, `events`, `hospitality`, `cafe`, `real-estate`, `business-loans`) green. Vite production build: 405KB JS / 21KB CSS.
 
-### v0.8+ — Empire
+### v0.7.1 — Expanded market roster ✅
+The MVP shipped with four neighborhoods in a single virtual city. With per-SKU pricing, hiring, and marketing now playable, the map itself was the bottleneck — four markets couldn't showcase the macro/halo/elasticity systems the rest of the game had grown into.
+- **4 → 22 markets**, organized into five archetype bands so each plays differently:
+  - **Central city (4)** — the original `m_downtown` / `m_riverside` / `m_oak_hills` / `m_southside`. IDs preserved; v0.1–v0.7 saves hydrate unchanged.
+  - **Greater metro urban (8)** — Midtown (dense residential), Warehouse District (gentrifying), University Heights (student), Harborview (waterfront tourism), Silverlake (tech professionals), Old Town (historic), Arts District (creative gentrifier), Little Portugal (ethnic enclave).
+  - **Suburbs (5)** — Cedar Park (middle-class family), Willow Creek (master-planned), Pine Ridge (gated enclave), Elmwood (aging inner-ring), Briar Glen (upper-middle).
+  - **Outlying / rural (3)** — Meadowbrook (exurban), Fort Hayward (military-adjacent), Junction Town (highway-exit small town).
+  - **Specialty commercial (2)** — Tech Park (corporate campus), Medical District (hospital/med-office).
+- **Coverage on the three market axes:**
+  - Population: 6K (Junction Town) → 68K (Midtown).
+  - Median income: $32K (University Heights) → $145K (Pine Ridge).
+  - Desirability: 0.35 (Junction Town) → 0.95 (Pine Ridge).
+- **No engine changes.** Same `Market` shape, same `generatePropertiesForMarket` call per market, same rival/hospitality halo logic. The MarketPage grid and every downstream selector already iterate `game.markets`, so the UI absorbed the expansion with zero changes.
+- **Save compatibility.** Bumped save schema v3 → v4 with an additive migration in `src/engine/save/schema.ts`. Existing saves get the 18 new markets merged in with fresh property inventories generated via `generatePropertiesForMarket`. Original markets (IDs + businessIds + property listings) are preserved untouched. Players who load a v0.7 save in v0.7.1 see all 22 neighborhoods on Markets without losing any of their empire.
+
+### v0.7.2 — Region-scale market roster ✅
+v0.7.1 took the map from city to metro. v0.7.2 takes it from metro to region — enough neighborhoods that the same business type can legitimately live in fundamentally different economies, and that new-game replays feel non-identical on the map alone.
+- **22 → 46 markets**, organized into seven archetype bands. Every band from v0.7.1 got depth, and two new tiers were added to reach economies the earlier roster couldn't express:
+  - **Central city (4)** — `m_downtown` / `m_riverside` / `m_oak_hills` / `m_southside`. IDs preserved since v0.1; all older saves hydrate unchanged.
+  - **Greater metro urban (12)** — v0.7.1's eight plus Chinatown (dense ethnic district, loyal cash-heavy customers), Garment District (wholesale/showroom), Theater District (nightlife-skewed), and Financial District (explosive weekday lunch, dead weekends).
+  - **Suburbs (10)** — v0.7.1's five plus Maple Grove (generic volume play), Hillcrest (hillside upper-middle), Fairview Heights (older lower-middle strip-mall belt), Tanglewood (understated old-money), and Summit Ridge (new-money luxury).
+  - **Outlying / rural (8)** — v0.7.1's three plus Cypress Falls (summer-tourist lake town), Stonebrook (horse country), Copper Valley (declining mining town), Willow Bend (agricultural, the smallest market at 4.2K), and Pineview (retirement community).
+  - **Specialty commercial (5)** — v0.7.1's Tech Park and Medical District plus Airport Commons (transient 24/7 demand), Convention Plaza (event-driven spikes), and Campus Commons (university-adjacent).
+  - **Coastal / resort (4, NEW)** — Seacliff (high-end bluffs), Marlin Harbor (working fishing village tipping to tourism), Sandy Point (mass-market beach town), Bayshore Marina (yacht/marina, $142K median).
+  - **Industrial / port (3, NEW)** — Rust Belt (declining heavy industry), Harbor Works (active container port), Rail Yard (freight/logistics hub).
+- **Coverage on the three market axes widened on every edge:**
+  - Population: 4.2K (Willow Bend) → 68K (Midtown).
+  - Median income: $32K (University Heights) → $145K (Pine Ridge).
+  - Desirability: 0.30 (Copper Valley) → 0.95 (Pine Ridge).
+- **No engine changes.** Same `Market` shape, same `generatePropertiesForMarket` seed, same rival/hospitality halo and macro-shock multipliers. The MarketPage grid, rival scoring, and every downstream selector already iterated `game.markets`, so the UI absorbed the expansion with zero source changes outside `markets.ts`.
+- **Save compatibility.** Bumped save schema v4 → v5 with an additive migration in `src/engine/save/schema.ts` — structurally identical to the v3 → v4 migration, which is the shape this kind of purely-additive market growth wants. Existing saves get the 24 new markets merged in with fresh property inventories; original markets (IDs, `businessIds`, property listings, rival occupants) are preserved untouched. Players loading a v0.7.1 save in v0.7.2 see all 46 neighborhoods on Markets without losing any of their empire.
+
+### v0.7.3 — Maverick County, NY setting + Region model ✅
+v0.7.2 delivered 46 neighborhoods but left them in a generic, nameless metro. v0.7.3 gives the map an identity — **Maverick County, NY**, a fictional booming county on the outskirts of New York City — and introduces the data model needed to grow the map outward in later versions without refactoring.
+- **Neighborhood flavor.** Every one of the 46 markets got a 1–2 sentence description written to evoke real NY-metro texture. Downtown became a "glass-and-brownstone district modeled on lower Manhattan"; Oak Hills became "old-money Tudors and Colonials, the kind of zip code Westchester realtors quote in full"; Seacliff, Marlin Harbor, Sandy Point, and Bayshore Marina read as Long Island / Jersey Shore-adjacent. Southside reads as a working-class "south of the tracks" district with bodegas and two-fare zones. The Industrial/Port tier became a working harbor + rail-freight belt. The Rural tier evokes upstate (Cypress Falls as a Catskills-adjacent summer town, Copper Valley as a declining mining town).
+- **MarketPage surfacing.** The grid header now leads with the region name ("Maverick County, NY") and tagline; every neighborhood card surfaces its description above the population / income / desirability stats. Graceful fallback to the live `STARTER_MARKETS` description for v0.7.2 saves that were persisted without a `description` field.
+- **Setting copy in UI.** HomePage splash now carries the setting line. NewGamePage intro reads "You are 24, newly arrived in Maverick County, NY — a booming county on the outskirts of New York City." The Tutorial gained a new step 1 ("Welcome to Maverick County.") introducing the county; the tutorial storage key bumped to `ma:tutorial:v0.7.3` so returning players see it once. SettingsPage "About" card now names the setting and the version.
+- **Region data model.** A new `Region` type ships in `src/types/game.ts` with `{ id, name, country, tagline, summary, marketIds, active }`. `GameState` now carries a `regions: Record<Id, Region>` map, and every `Market` now has a required `regionId`. `src/data/regions.ts` exports the single launch region (`r_maverick_county_ny`) with all 46 market IDs listed in its `marketIds` array. The architecture is deliberately thin — the whole point is that Phase 2 and Phase 3 become data additions in `regions.ts`, not a refactor.
+- **Save compatibility.** Bumped save schema v5 → v6 with a three-step additive migration:
+  1. Back-fills `regionId: "r_maverick_county_ny"` on every existing `Market` record.
+  2. Additive merge of any new `STARTER_MARKETS` entries (identity op at v0.7.3 since the roster is unchanged, but kept for symmetry with the v3→v4 and v4→v5 patterns).
+  3. Seeds `regions` from `STARTER_REGIONS`.
+  Existing saves pre-dating `description` on `Market` don't gain one through migration; the UI falls back to the live `STARTER_MARKETS` record when rendering. All rival state, ownership, property listings, and `businessIds` are preserved.
+
+### National expansion roadmap — Phase 1 / 2 / 3
+The Region model is the axis the map grows along.
+- **Phase 1 — Maverick County, NY (v0.7.3, current).** Single playable Region. A fictional county on NYC's outskirts, rich enough to exercise every archetype the game's systems model (urban, suburban, rural, coastal, industrial/port, specialty commercial). The whole v0.8/v0.9 feature set (manager hiring, franchise, cross-market portfolio, 1–2 new business types, rival M&A) lives inside this Region so new systems land before the map expands.
+- **Phase 2 — Neighboring regions (mid-roadmap, v0.10–v0.12 band).** Add the real-world regions on Maverick County's border: **NYC boroughs** (Manhattan, Brooklyn, Queens, Bronx, Staten Island), **Long Island** (Nassau, Suffolk), and **New Jersey** (Hudson, Bergen, Essex). Each ships with its own roster (20–40 neighborhoods) and its own macro character (e.g. Manhattan = extreme rent + extreme traffic; Staten Island = suburban density; NJ industrial corridors = port/logistics play). Commuter flows between regions become a modeled thing — a business in Jersey City can draw Manhattan foot traffic at a decay, and rivals can run cross-region portfolios. This is also where the Region state map earns its weight: region-level political events, region-specific macro shocks (transit strike, tri-state bridge closure), region-specific liquor / zoning rules.
+- **Phase 3 — National expansion (late-roadmap, v1.0+).** Major US metros unlock as data-only additions: **Los Angeles County (CA)**, **Cook County (IL)**, **Miami-Dade (FL)**, **Harris County (TX)**, **Fulton County (GA)**, and more. Each ships with its own neighborhood roster and metro-specific archetypes that Maverick County can't express (Hollywood studio district, Chicago meat-packing belt, Miami cruise/import belt, Dallas sprawl, Atlanta HBCU corridor, etc.). National scale also unlocks the empire mechanics slotted at v0.9+:
+  - **Sports-team ownership** is region-scoped — you buy the team of a Region, not a neighborhood. Home attendance pulls from the Region's whole population × wealth × fandom profile; rival bidders for a franchise skew toward the incumbent owners of that Region. Relocation is a Region-to-Region move with a TV-market math model.
+  - **Political office** is Region-scoped at the county / mayor tier and eventually state-scoped (Governor) and national-scoped (Senator, President). A candidacy's name ID, war chest, and coalition all derive from the Regions where the player owns businesses or holds prior office. The `Region.active` flag lets us ship un-playable Regions as scaffolding for these mechanics before their neighborhoods are authored.
+
+### v0.8.0 — Business-type scale ✅
+v0.7 made businesses drivable; v0.7.1/.2/.3 expanded the map they live on. v0.8 was the industry scale-up that earlier versions had been deferring. The business roster goes from 4 types to 22, organized into 6 categories, and introduces two shared engines so adding the 23rd type is a config file, not a system.
+
+- **4 → 22 business types** across 6 categories. New types: `food_truck`, `pizza_shop`, `nightclub`, 8 retail subtypes (bookstore, electronics_store, florist, supermarket, jewelry_store, clothing_retail, suit_store, furniture_store), `cinema`, `movie_studio`, `tech_startup`, `gaming_studio`, `construction`, `hospital_clinic`, `real_estate_firm`, `oil_gas`, `military_tech`.
+- **Shared engine — `retailBase.ts`.** The 8 retail subtypes are all thin config files (SKU list, elasticity coefficients, restock cadence, staff roster, rent multiplier) plugged into `makeRetailModule(config)`. Lets us add the 9th retail type with a ~40-line file.
+- **Shared engine — `projectBase.ts`.** The 4 project-based studios (`construction`, `tech_startup`, `gaming_studio`, `movie_studio`, plus `military_tech`) all drive through `makeProjectModule(config)`. Project pipeline: weekly roll scaled by prestige × marketing; concurrent work caps; hourly burn accrues to `costLedger`; daily completion check pays out (0.7 + quality × 0.5) × budget to `billingLedger` and bumps prestige. Residual tail is config-driven (SaaS 12wk at 1.5%/wk; royalties 52wk at 0.8%/wk; streaming 104wk at 0.4%/wk; construction none).
+- **Cinema economics.** Multi-screen (4 screens, 1 premium) with a 28-day film lifetime decay curve (week 1 = 1.0, week 4 ≈ 0.25, 0 after). Weekly auto-rotation picks new films from genre-indexed title pools. Monthly seasonality (summer Jul peak 1.35x, Dec holiday 1.25x) × day-of-week multiplier (Mon 0.65, Sat 1.25) × per-hour attendance curve (peak 19–21). Concessions attach rate 65% at 82% margin booked separately to `concessions` ledger. `streamingPressure` state grows slowly (max 0.6) on daily rolls to bite structural margins over years of in-game time.
+- **Hospital clinic.** 24/7 operation with an hour-of-day traffic curve (9–17 = 1.0, 7–21 = 0.65, night = 0.2). Copays are booked immediately as `revenue`; insurance billings accrue to a `pendingInsuranceCents` field and are paid out on the *next* week's tick to the `insurance_billing` ledger (modeling real-world AR lag). `clinicianRatio(state)` throttles hourly throughput. Malpractice: per-visit probability = 0.00008 × (1 − careQuality) × (1 − clinicianSkill); settlement $40K–$160K hits `malpractice_settlement` and cash immediately. $400K startup, unlocks at $320K NW.
+- **Real estate firm.** Portfolio of `Property { holdType: "flip"|"manage", purchasePriceCents, renovationCostCents, currentValueCents, monthlyRentCents, occupied, acquiredAtTick, flipTargetWeeks, flipTargetAppreciation }`. Hourly: agent wages 9–18. Daily: value drift (−0.08% .. +0.18%). Weekly: every 4 weeks rolls occupancy (85% stay / 35%+marketing fill), collects 1/4 monthly rent as `rent_income` plus 8% cash-neutral `property_management_fee` for accounting visibility. Flip exits at `flipTargetWeeks` with variance roll and prestige asymmetry (+ on gain, − on loss). Acquisition chance scales with prestige + marketing, capped at 12-property portfolio.
+- **Tech startup VC overlay.** `techStartup.ts` wraps `onWeek` with a VC raise overlay: every 12 weeks, probability = 0.12 + prestige × 0.65 of raising $500K–$4M to `vc_proceeds`. Project mechanics otherwise inherit `projectBase` with a 12-week SaaS residual tail at 1.5%/week.
+- **Oil & gas.** `Well { id, name, dailyProductionBbl, initialDailyBbl, declinePerWeek, reserveBbl, drilledAtTick, productive }`. Daily tick produces barrels × spot price (`commodity_sale`) minus lifting cost (`cogs`). Weekly: spot-price random walk (−8% to +9%) clamped $45–$110; decline applied per well; 35% chance to drill if under the 6-well cap. Drilling capex $180K–$500K; 68% hit rate. Hit wells generate initial production scaled by capex tier and reserves = initialBbl × 180 × (0.7–1.5). Dry holes lose the full capex. `drilling_capex` ledger lets the finance dashboard separate capital outlay from operating burn.
+- **Military tech.** `projectBase` with `gov_contract` billing ledger and `rd_spend` cost ledger. 26–52 week programs, $3M–$28M, 2 concurrent max, no residuals (government checks are one-shot). $500K startup, unlocks at $400K NW — the highest-tier of the project-based ladder. Grand-strategy / tax dashboards can separate private (`project_billing`) vs. public (`gov_contract`) revenue.
+- **MarketPage UI — category headers.** Flat 22-button grid would be unscannable. Registry exports `BUSINESS_TYPE_CATEGORIES: Array<{label, types[]}>`; MarketPage renders a small uppercase header per category group above that group's buttons. `defaultNameFor` was rewritten as a full switch covering all 22 types (e.g. food_truck → "Truck", cinema → "Cinema", tech_startup → "Labs", oil_gas → "Petroleum", military_tech → "Defense").
+- **15 new ledger categories.** `cover_charge`, `project_billing`, `project_cost`, `vc_proceeds`, `royalties`, `box_office`, `concessions`, `insurance_billing`, `malpractice_settlement`, `property_management_fee`, `flip_gain`, `commodity_sale`, `drilling_capex`, `gov_contract`, `rd_spend`. Every new ledger goes through `pushLedgerEntry` the same as existing ones so the weekly P&L + Finance page absorb them automatically.
+- **Engine purity preserved.** Every new module uses the `structuredClone(biz.state)` → mutate clone → repack pattern established in v0.6. `npm run smoke:purchase-tick` still runs 48 ticks against deep-frozen state.
+- **Regression canary.** Full smoke suite (`purchase-tick`, `events`, `hospitality`, `cafe`, `real-estate`, `business-loans`) green. `npx tsc --noEmit` clean. `npm run lint` clean (one pre-existing warning in `finance.ts`). `npm run build` 499.66 KB JS / 151.39 KB gz, 439 modules transformed.
+- **No save migration needed.** v0.8.0 is purely additive on the business registry side — new types aren't in any existing save, so no save-schema bump. Owning businesses continues to write `Business { type: BusinessTypeId, state: ... }` records through the same `patchBusinessState` path.
+
+### v0.9 — Manager hiring + franchise + cross-market portfolio (next)
+With 22 types available, the bottleneck is attention: a player can't actively run 22 businesses. v0.9 is about crossing the threshold from *operator* to *portfolio owner*.
+- **Manager / GM hiring.** Assign a manager to a business; tick runs at ~85% of hands-on efficiency but needs no active attention. Fee = `salary + bonus on quarterly profit`.
+- **Clone / franchise flow.** Open a 2nd location of an existing business type at a reduced startup cost (shared brand, negotiated supplier contracts). A property-hosted store carries quality benefits to its clone.
+- **Cross-market portfolio view.** A dashboard that rolls up every business the player owns with a heatmap by market and a stacked P&L.
+- **Rival M&A.** Rivals can offer to buy your struggling businesses; you can make offers on theirs. Triggers a negotiation dialog gated on credit, cash, and strategic fit.
+- **Multiple save slots.** Named slots (`"clean-run"`, `"hardcore-2026"`), slot picker on home screen, slot export for sharing.
+
+### v1.0+ — Empire (deferred)
+Previously slotted for v0.9, but the team judged that without multi-region play, these mechanics don't have enough surface area. Moved out to post-national-expansion.
 - Sports teams (roster + season), cities (tax base, elections), political influence
 - Media & reputation system, lawsuits, scandals
 - 3–5 rivals with coordinated behavior + memory of player moves

@@ -1,6 +1,6 @@
 {
   "name": "maverick-ambitions",
-  "version": "0.6.0",
+  "version": "0.8.0",
   "private": true,
   "type": "module",
   "description": "Maverick Ambitions — a deep, generational business simulation game inspired by Big Ambitions. iPhone-first, iPad and Desktop adaptive.",
@@ -11,7 +11,8 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint \"src/**/*.{ts,tsx}\"",
     "format": "prettier --write .",
-    "smoke": "npm run smoke:events && npm run smoke:hospitality && npm run smoke:cafe && npm run smoke:real-estate && npm run smoke:business-loans",
+    "smoke": "npm run smoke:purchase-tick && npm run smoke:events && npm run smoke:hospitality && npm run smoke:cafe && npm run smoke:real-estate && npm run smoke:business-loans",
+    "smoke:purchase-tick": "tsx scripts/smoke-purchase-tick.ts",
     "smoke:events": "tsx scripts/smoke-events.ts",
     "smoke:hospitality": "tsx scripts/smoke-hospitality.ts",
     "smoke:cafe": "tsx scripts/smoke-cafe.ts",
