@@ -12,9 +12,8 @@ import { Button } from "@/components/ui/Button";
  * player can manually replay it from Settings → "Replay tutorial".
  */
 
-// v0.7.3 bumped the key so returning players see the new Maverick County
-// welcome step once.
-const STORAGE_KEY = "ma:tutorial:v0.7.3";
+// Storage key is versioned so tutorial-content changes can force a replay.
+const STORAGE_KEY = "ma:tutorial:v0.8.0";
 
 export interface TutorialStep {
   title: string;
