@@ -5,6 +5,7 @@ import { NewGamePage } from "@/routes/NewGamePage";
 import { GameLayout } from "@/routes/GameLayout";
 import { DashboardPage } from "@/routes/DashboardPage";
 import { BusinessPage } from "@/routes/BusinessPage";
+import { BusinessDetailPage } from "@/routes/BusinessDetailPage";
 import { MarketPage } from "@/routes/MarketPage";
 import { FinancePage } from "@/routes/FinancePage";
 import { FamilyPage } from "@/routes/FamilyPage";
@@ -23,6 +24,7 @@ const router = createHashRouter([
     children: [
       { path: "/dashboard", element: <DashboardPage /> },
       { path: "/business", element: <BusinessPage /> },
+      { path: "/business/:id", element: <BusinessDetailPage /> },
       { path: "/market", element: <MarketPage /> },
       { path: "/finance", element: <FinancePage /> },
       { path: "/family", element: <FamilyPage /> },
