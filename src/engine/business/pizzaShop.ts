@@ -33,7 +33,7 @@ import type {
 
 import { getHours } from "date-fns";
 
-import { isBusinessHour, tickToDate } from "@/lib/date";
+import { tickToDate } from "@/lib/date";
 import { dollars } from "@/lib/money";
 
 import { ECONOMY } from "../economy/constants";
@@ -47,6 +47,9 @@ import {
 import { hospitalityHalo } from "../economy/reputation";
 import {
   effectiveMarketingScore,
+  hourlyWageMultiplier,
+  hoursCsatBonus,
+  isBusinessOpenNow,
   leversOf,
   totalWeeklyMarketing,
 } from "./leverState";
@@ -256,7 +259,7 @@ function onHour(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
   const events: BusinessTickResult["events"] = [];
 
   const { cooks, counter, drivers } = rolesOnShift(state);
-  if (!market || !isBusinessHour(ctx.tick) || cooks === 0) {
+  if (!market || !isBusinessOpenNow(biz, ctx.tick) || cooks === 0) {
     return { business: updateDerivedOnly(biz, state), ledger: [], events: [] };
   }
 
@@ -433,8 +436,11 @@ function onHour(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
     );
   }
 
-  // Wages accrue.
-  const wagesThisHour = state.staff.reduce((a, s) => a + s.hourlyWageCents, 0);
+  // Wages accrue. Graveyard-hour premium (1.25×) applies to late-night shifts.
+  const wageMul = hourlyWageMultiplier(ctx.tick);
+  const wagesThisHour = Math.round(
+    state.staff.reduce((a, s) => a + s.hourlyWageCents, 0) * wageMul,
+  );
   state.wagesAccrued += wagesThisHour;
 
   state.weeklyRevenueDineIn += dineInRevenue;
@@ -577,7 +583,9 @@ function onWeek(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
     leversOf(biz),
     ctx.world.markets[biz.locationId],
   );
-  const target = 55 + service * 30 + csatMarketingScore * 5;
+  // v0.10: 24/7 or 140+ hr/wk → +1/+2 CSAT for convenience.
+  const hoursBonus = hoursCsatBonus(leversOf(biz).hours);
+  const target = 55 + service * 30 + csatMarketingScore * 5 + hoursBonus;
   const next =
     biz.kpis.customerSatisfaction +
     (Math.max(0, Math.min(90, target)) - biz.kpis.customerSatisfaction) * 0.2;

@@ -31,6 +31,10 @@ import type {
   Tick,
 } from "@/types/game";
 
+import { getHours } from "date-fns";
+
+import { dayOfWeek, tickToDate } from "@/lib/date";
+
 import {
   MARKETING_CHANNELS,
   MARKETING_CHANNEL_IDS,
@@ -281,6 +285,30 @@ export function hoursCsatBonus(schedule: HoursSchedule): number {
   if (total >= HOURS_PER_WEEK) return 2; // fully 24/7
   if (total >= HOURS_PER_WEEK * 0.85) return 1; // 140+ hrs/week
   return 0;
+}
+
+/**
+ * Convenience wrapper: "is the business's player-configured schedule open
+ * right now?". Business modules call this to gate revenue + customer-facing
+ * activity in their `onHour`. Uses `leversOf(biz)` so a missing levers
+ * block (v7 save, or legacy test fixture) falls back to the retail default.
+ */
+export function isBusinessOpenNow(biz: Business, tick: Tick): boolean {
+  const schedule = leversOf(biz).hours;
+  const dow = (dayOfWeek(tick) as DayOfWeek);
+  const hour = getHours(tickToDate(tick));
+  return isOpenAt(schedule, dow, hour);
+}
+
+/** Graveyard hours (0-6 and 22-23) that carry a wage premium. */
+export function isGraveyardHour(tick: Tick): boolean {
+  const h = getHours(tickToDate(tick));
+  return h < 6 || h >= 22;
+}
+
+/** Hourly wage multiplier for the tick — 1.25× on graveyard shifts, else 1. */
+export function hourlyWageMultiplier(tick: Tick): number {
+  return isGraveyardHour(tick) ? 1.25 : 1.0;
 }
 
 // ========== Signage ==========

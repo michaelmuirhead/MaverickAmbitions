@@ -45,6 +45,9 @@ import { marketFootTraffic } from "../economy/market";
 
 import {
   effectiveMarketingScore,
+  hourlyWageMultiplier,
+  hoursCsatBonus,
+  isBusinessOpenNow,
   leversOf,
   totalWeeklyMarketing,
 } from "./leverState";
@@ -332,7 +335,14 @@ function onHour(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
   const market = ctx.world.markets[biz.locationId];
   const ledgerEntries: LedgerEntry[] = [];
 
-  if (!market || !isOperatingHour(ctx.tick) || state.staff.length === 0) {
+  // v0.10: intersect the type's natural operating window with the
+  // player's schedule so overrides like "closed Mondays" apply.
+  if (
+    !market ||
+    !isOperatingHour(ctx.tick) ||
+    !isBusinessOpenNow(biz, ctx.tick) ||
+    state.staff.length === 0
+  ) {
     return { business: updateDerivedOnly(biz, state), ledger: [], events: [] };
   }
 
@@ -448,8 +458,11 @@ function onHour(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
     );
   }
 
-  // Wages accrue.
-  const wagesThisHour = state.staff.reduce((a, s) => a + s.hourlyWageCents, 0);
+  // Wages accrue. Graveyard hours (before 6am or 22:00+) pay a 1.25× premium.
+  const wageMul = hourlyWageMultiplier(ctx.tick);
+  const wagesThisHour = Math.round(
+    state.staff.reduce((a, s) => a + s.hourlyWageCents, 0) * wageMul,
+  );
   state.wagesAccrued += wagesThisHour;
 
   state.weeklyBoxOfficeAcc += hourBoxOffice;
@@ -610,11 +623,13 @@ function onWeek(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
     leversOf(biz),
     ctx.world.markets[biz.locationId],
   );
+  const hoursBonus = hoursCsatBonus(leversOf(biz).hours);
   const target =
     55 +
     csatMarketingScore * 10 +
     (concessionShare > 0.35 ? 6 : 0) +
-    (state.streamingPressure > 0.45 ? -6 : 0);
+    (state.streamingPressure > 0.45 ? -6 : 0) +
+    hoursBonus;
   const next =
     biz.kpis.customerSatisfaction +
     (Math.max(0, Math.min(90, target)) - biz.kpis.customerSatisfaction) * 0.18;

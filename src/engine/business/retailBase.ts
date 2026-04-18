@@ -40,7 +40,7 @@ import type {
 
 import { getHours, getMonth } from "date-fns";
 
-import { isBusinessHour, isWeekend, tickToDate } from "@/lib/date";
+import { isWeekend, tickToDate } from "@/lib/date";
 import { dollars } from "@/lib/money";
 
 import { ECONOMY } from "../economy/constants";
@@ -53,6 +53,9 @@ import {
 } from "../economy/market";
 import {
   effectiveMarketingScore,
+  hourlyWageMultiplier,
+  hoursCsatBonus,
+  isBusinessOpenNow,
   leversOf,
   totalWeeklyMarketing,
 } from "./leverState";
@@ -306,7 +309,7 @@ export function makeRetailModule(
     const ledgerEntries: LedgerEntry[] = [];
     const events: BusinessTickResult["events"] = [];
 
-    if (!market || !isBusinessHour(ctx.tick) || state.staff.length === 0) {
+    if (!market || !isBusinessOpenNow(biz, ctx.tick) || state.staff.length === 0) {
       return {
         business: updateDerivedOnly(biz, state),
         ledger: [],
@@ -454,10 +457,12 @@ export function makeRetailModule(
       });
     }
 
-    // Accrue wages.
-    const wagesThisHour = state.staff.reduce(
-      (a, s) => a + s.hourlyWageCents,
-      0,
+    // Accrue wages. Graveyard hours (0-6, 22-23) cost 1.25× — this only
+    // matters for businesses the player has scheduled into those windows,
+    // since the schedule gate above filtered closed hours already.
+    const wageMul = hourlyWageMultiplier(ctx.tick);
+    const wagesThisHour = Math.round(
+      state.staff.reduce((a, s) => a + s.hourlyWageCents, 0) * wageMul,
     );
     state.wagesAccrued += wagesThisHour;
 
@@ -643,11 +648,14 @@ export function makeRetailModule(
         ctx.world.markets[biz.locationId],
       ) + (config.weeklyEventTrafficBump ?? 0),
     );
+    // v0.10: 24/7 (or 140+ hr/wk) gets a small convenience CSAT bonus.
+    const hoursBonus = hoursCsatBonus(leversOf(biz).hours);
     const target =
       55 +
       service * 25 +
       stock * 10 +
-      csatMarketingScore * 5 -
+      csatMarketingScore * 5 +
+      hoursBonus -
       wastePenalty;
     const next =
       biz.kpis.customerSatisfaction +

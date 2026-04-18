@@ -32,7 +32,7 @@ import type {
 
 import { getHours } from "date-fns";
 
-import { dayOfWeek, isBusinessHour, isWeekend, tickToDate } from "@/lib/date";
+import { dayOfWeek, isWeekend, tickToDate } from "@/lib/date";
 import { dollars } from "@/lib/money";
 
 import { ECONOMY } from "../economy/constants";
@@ -45,6 +45,9 @@ import {
 } from "../economy/market";
 import {
   effectiveMarketingScore,
+  hourlyWageMultiplier,
+  hoursCsatBonus,
+  isBusinessOpenNow,
   leversOf,
   totalWeeklyMarketing,
 } from "./leverState";
@@ -284,7 +287,7 @@ function onHour(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
   const ledgerEntries: LedgerEntry[] = [];
   const events: BusinessTickResult["events"] = [];
 
-  if (!market || !isBusinessHour(ctx.tick) || state.crew.length === 0) {
+  if (!market || !isBusinessOpenNow(biz, ctx.tick) || state.crew.length === 0) {
     return {
       business: updateDerivedOnly(biz, state),
       ledger: [],
@@ -385,9 +388,10 @@ function onHour(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
     );
   }
 
-  const wagesThisHour = state.crew.reduce(
-    (a, c) => a + c.hourlyWageCents,
-    0,
+  // v0.10: graveyard hours (0-6, 22-23) cost 1.25× per the hours lever.
+  const wageMul = hourlyWageMultiplier(ctx.tick);
+  const wagesThisHour = Math.round(
+    state.crew.reduce((a, c) => a + c.hourlyWageCents, 0) * wageMul,
   );
   state.wagesAccrued += wagesThisHour;
   state.weeklyRevenueAcc += hourRevenue;
@@ -585,10 +589,13 @@ function onWeek(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
 
   // CSAT drift by weather + service.
   const service = avgCrewService(state);
+  // v0.10: 24/7 / 140+ hr/wk hours bonus. Rare for a food truck but possible.
+  const hoursBonus = hoursCsatBonus(leversOf(biz).hours);
   const target =
     55 +
     service * 30 +
-    (state.truckCondition - 0.5) * 15 -
+    (state.truckCondition - 0.5) * 15 +
+    hoursBonus -
     state.stormDaysThisWeek * 3;
   const prev = biz.kpis.customerSatisfaction;
   const next = prev + (Math.max(0, Math.min(95, target)) - prev) * 0.25;

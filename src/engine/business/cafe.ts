@@ -30,7 +30,6 @@ import type {
   Tick,
 } from "@/types/game";
 
-import { isBusinessHour } from "@/lib/date";
 import { dollars } from "@/lib/money";
 
 import { ECONOMY } from "../economy/constants";
@@ -45,6 +44,9 @@ import { hospitalityHalo } from "../economy/reputation";
 import { CAFE_MENU, type MenuItemId } from "@/data/menu";
 import {
   effectiveMarketingScore,
+  hourlyWageMultiplier,
+  hoursCsatBonus,
+  isBusinessOpenNow,
   leversOf,
   totalWeeklyMarketing,
 } from "./leverState";
@@ -289,7 +291,7 @@ function onHour(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
   const ledgerEntries: LedgerEntry[] = [];
   const events: BusinessTickResult["events"] = [];
 
-  if (!market || !isBusinessHour(ctx.tick) || state.baristas.length === 0) {
+  if (!market || !isBusinessOpenNow(biz, ctx.tick) || state.baristas.length === 0) {
     return {
       business: updateDerivedOnly(biz, state),
       ledger: [],
@@ -402,10 +404,11 @@ function onHour(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
   const unmet = Math.max(0, Math.round(baseTraffic * visitRate) - covers);
   if (unmet > throughputCap * 0.4) state.complaintsThisWeek += 1;
 
-  // Wages accrue.
-  const wagesThisHour = state.baristas.reduce(
-    (acc, b) => acc + b.hourlyWageCents,
-    0,
+  // Wages accrue. Graveyard hours (0-6, 22-23) carry a 1.25× premium
+  // — only relevant if the player scheduled open hours into those slots.
+  const wageMul = hourlyWageMultiplier(ctx.tick);
+  const wagesThisHour = Math.round(
+    state.baristas.reduce((acc, b) => acc + b.hourlyWageCents, 0) * wageMul,
   );
   state.wagesAccrued += wagesThisHour;
 
@@ -509,12 +512,15 @@ function onDay(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
     leversOf(biz),
     ctx.world.markets[biz.locationId],
   );
+  // v0.10: 24/7 or 140+ hr/wk schedule → small convenience CSAT bonus.
+  const hoursBonus = hoursCsatBonus(leversOf(biz).hours);
   const target =
     50 +
     service * 35 + // service quality is most of the signal
     (state.ambience - 0.5) * 20 +
     (priceFairness - 1) * 10 +
-    (csatMarketingScore - 0.3) * 5 -
+    (csatMarketingScore - 0.3) * 5 +
+    hoursBonus -
     wasteFactor * 4 -
     state.complaintsThisWeek * 1.2;
 

@@ -44,6 +44,9 @@ import { competitiveDensity, marketFootTraffic } from "../economy/market";
 import { hospitalityHalo } from "../economy/reputation";
 import {
   effectiveMarketingScore,
+  hourlyWageMultiplier,
+  hoursCsatBonus,
+  isBusinessOpenNow,
   leversOf,
   totalWeeklyMarketing,
 } from "./leverState";
@@ -248,7 +251,14 @@ function onHour(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
     return { business: updateDerivedOnly(biz, state), ledger: [], events: [] };
   }
 
-  if (!market || !isOperatingHour(ctx.tick) || state.staff.length === 0) {
+  // v0.10: base operating hours (bars-at-night) intersect with the
+  // player's schedule so a "closed Tuesdays" override works.
+  if (
+    !market ||
+    !isOperatingHour(ctx.tick) ||
+    !isBusinessOpenNow(biz, ctx.tick) ||
+    state.staff.length === 0
+  ) {
     return { business: updateDerivedOnly(biz, state), ledger: [], events: [] };
   }
 
@@ -395,8 +405,12 @@ function onHour(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
     }
   }
 
-  // Wages accrue.
-  const wagesThisHour = state.staff.reduce((a, s) => a + s.hourlyWageCents, 0);
+  // Wages accrue. Graveyard-hour premium — most nightclub hours fall in
+  // the 22:00-06:00 window, so this is the norm not the exception.
+  const wageMul = hourlyWageMultiplier(ctx.tick);
+  const wagesThisHour = Math.round(
+    state.staff.reduce((a, s) => a + s.hourlyWageCents, 0) * wageMul,
+  );
   state.wagesAccrued += wagesThisHour;
 
   state.weeklyCoverAcc += coverRevenue;
@@ -543,11 +557,14 @@ function onWeek(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
     leversOf(biz),
     ctx.world.markets[biz.locationId],
   );
+  // v0.10: 24/7 / 140+ hr/wk schedule bonus (e.g. 6-day late-night run).
+  const hoursBonus = hoursCsatBonus(leversOf(biz).hours);
   const target =
     55 +
     state.venueTier * 25 +
     csatMarketingScore * 10 +
-    (state.weeklyVipAcc > dollars(5000) ? 5 : 0) -
+    (state.weeklyVipAcc > dollars(5000) ? 5 : 0) +
+    hoursBonus -
     complaintDrag;
   const next =
     biz.kpis.customerSatisfaction +

@@ -17,7 +17,7 @@ import type {
   Tick,
 } from "@/types/game";
 
-import { HOURS_PER_WEEK, isBusinessHour } from "@/lib/date";
+import { HOURS_PER_WEEK } from "@/lib/date";
 import { dollars, percentOf } from "@/lib/money";
 
 import { ECONOMY } from "../economy/constants";
@@ -31,6 +31,9 @@ import {
 import { hospitalityHalo } from "../economy/reputation";
 import {
   effectiveMarketingScore,
+  hourlyWageMultiplier,
+  hoursCsatBonus,
+  isBusinessOpenNow,
   leversOf,
   totalWeeklyMarketing,
 } from "./leverState";
@@ -222,7 +225,7 @@ function onHour(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
   const ledgerEntries: LedgerEntry[] = [];
   const events: BusinessTickResult["events"] = [];
 
-  if (!market || !isBusinessHour(ctx.tick) || state.staff.length === 0) {
+  if (!market || !isBusinessOpenNow(biz, ctx.tick) || state.staff.length === 0) {
     return {
       business: updateDerived(biz, state),
       ledger: [],
@@ -308,10 +311,11 @@ function onHour(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
   }
 
   // Accrue wages for the hour (one hourly wage per staff on duty).
+  // v0.10: graveyard shifts (0-6, 22-23) bill at 1.25× per the hours lever.
   const activeStaff = state.staff.length;
-  const wagesThisHour = state.staff.reduce(
-    (acc, s) => acc + s.hourlyWageCents,
-    0,
+  const wageMul = hourlyWageMultiplier(ctx.tick);
+  const wagesThisHour = Math.round(
+    state.staff.reduce((acc, s) => acc + s.hourlyWageCents, 0) * wageMul,
   );
   state.wagesAccrued += wagesThisHour;
 
@@ -490,6 +494,8 @@ function onWeek(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
   state.weeklyVisitorsAcc = 0;
   state.weeklyUnitsSoldAcc = 0;
 
+  // v0.10: 24/7 (or 140+ hr/wk) gives a small convenience CSAT bonus.
+  const hoursBonus = hoursCsatBonus(leversOf(biz).hours);
   const kpis: BusinessKPIs = {
     ...biz.kpis,
     weeklyRevenue,
@@ -501,6 +507,7 @@ function onWeek(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
         100,
         biz.kpis.customerSatisfaction +
           (weeklyRevenue > weeklyExpenses ? 1 : -2) +
+          hoursBonus +
           ctx.rng.nextFloat(-1, 1),
       ),
     ),

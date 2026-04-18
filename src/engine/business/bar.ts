@@ -42,6 +42,9 @@ import { hospitalityHalo } from "../economy/reputation";
 import { BAR_DRINKS, type DrinkId } from "@/data/barDrinks";
 import {
   effectiveMarketingScore,
+  hourlyWageMultiplier,
+  hoursCsatBonus,
+  isBusinessOpenNow,
   leversOf,
   totalWeeklyMarketing,
 } from "./leverState";
@@ -287,7 +290,15 @@ function onHour(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
   const ledgerEntries: LedgerEntry[] = [];
   const events: BusinessTickResult["events"] = [];
 
-  if (!market || !hospitalityIsOpen("bar", ctx.tick) || state.bartenders.length === 0) {
+  // v0.10: hospitality check encodes the type-natural operating window
+  // (~6pm-2am for bars). `isBusinessOpenNow` intersects with the player's
+  // schedule — closing a day overrides even peak-hour demand.
+  if (
+    !market ||
+    !hospitalityIsOpen("bar", ctx.tick) ||
+    !isBusinessOpenNow(biz, ctx.tick) ||
+    state.bartenders.length === 0
+  ) {
     return {
       business: updateDerivedOnly(biz, state),
       ledger: [],
@@ -416,10 +427,11 @@ function onHour(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
   const tipsThisHour = tipPool(hourRevenue, 0.15 + LIQUOR_TIER[state.liquorTier].tipBoost);
   state.tipsAccrued += tipsThisHour;
 
-  // Wages accrue (tipped base).
-  const wagesThisHour = state.bartenders.reduce(
-    (acc, b) => acc + b.hourlyWageCents,
-    0,
+  // Wages accrue (tipped base). v0.10: graveyard hours (0-6, 22-23) pay
+  // 1.25× — relevant for bar's natural late-night window.
+  const wageMul = hourlyWageMultiplier(ctx.tick);
+  const wagesThisHour = Math.round(
+    state.bartenders.reduce((acc, b) => acc + b.hourlyWageCents, 0) * wageMul,
   );
   state.wagesAccrued += wagesThisHour;
 
@@ -508,12 +520,15 @@ function onDay(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
     leversOf(biz),
     ctx.world.markets[biz.locationId],
   );
+  // v0.10: 24/7 / late-night extended schedule adds a small convenience CSAT.
+  const hoursBonus = hoursCsatBonus(leversOf(biz).hours);
   const target =
     50 +
     service * 30 +
     (state.ambience - 0.5) * 20 +
     (priceFairness - 1) * 8 +
-    (csatMarketingScore - 0.3) * 5 -
+    (csatMarketingScore - 0.3) * 5 +
+    hoursBonus -
     state.noiseComplaintsThisWeek * 1.5;
 
   const ceiling = tier.csatCeiling;

@@ -43,6 +43,9 @@ import { hospitalityHalo } from "../economy/reputation";
 import { RESTAURANT_MENU, type DishId } from "@/data/restaurantMenu";
 import {
   effectiveMarketingScore,
+  hourlyWageMultiplier,
+  hoursCsatBonus,
+  isBusinessOpenNow,
   leversOf,
   totalWeeklyMarketing,
 } from "./leverState";
@@ -342,6 +345,7 @@ function onHour(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
   if (
     !market ||
     !hospitalityIsOpen("restaurant", ctx.tick) ||
+    !isBusinessOpenNow(biz, ctx.tick) ||
     state.cooks.length === 0 ||
     state.servers.length === 0
   ) {
@@ -470,8 +474,14 @@ function onHour(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
   state.tipsAccrued += tipsThisHour;
 
   // Wages accrue — cooks + servers (hourly; chef is salaried, paid weekly).
-  const cookWages = state.cooks.reduce((a, c) => a + c.hourlyWageCents, 0);
-  const serverWages = state.servers.reduce((a, s) => a + s.hourlyWageCents, 0);
+  // v0.10: graveyard hours cost 1.25× per the hours lever.
+  const wageMul = hourlyWageMultiplier(ctx.tick);
+  const cookWages = Math.round(
+    state.cooks.reduce((a, c) => a + c.hourlyWageCents, 0) * wageMul,
+  );
+  const serverWages = Math.round(
+    state.servers.reduce((a, s) => a + s.hourlyWageCents, 0) * wageMul,
+  );
   state.wagesAccrued += cookWages + serverWages;
 
   state.weeklyRevenueAcc += hourRevenue;
@@ -546,6 +556,9 @@ function onDay(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
     leversOf(biz),
     ctx.world.markets[biz.locationId],
   );
+  // v0.10: convenience bonus for 24/7 or 140+ hr/wk schedules (rare for
+  // restaurants but possible for a late-night diner).
+  const hoursBonus = hoursCsatBonus(leversOf(biz).hours);
   const target =
     50 +
     service * 20 +
@@ -553,7 +566,8 @@ function onDay(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
     (state.ambience - 0.5) * 15 +
     (priceFairness - 1) * 10 +
     (csatMarketingScore - 0.3) * 4 +
-    tenureBump -
+    tenureBump +
+    hoursBonus -
     stalePenalty -
     state.noShowsThisWeek * 0.4;
 
