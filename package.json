@@ -1,6 +1,6 @@
 {
   "name": "maverick-ambitions",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "private": true,
   "type": "module",
   "description": "Maverick Ambitions — a deep, generational business simulation game inspired by Big Ambitions. iPhone-first, iPad and Desktop adaptive.",
@@ -11,24 +11,25 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint \"src/**/*.{ts,tsx}\"",
     "format": "prettier --write .",
-    "smoke": "npm run smoke:purchase-tick && npm run smoke:events && npm run smoke:hospitality && npm run smoke:cafe && npm run smoke:real-estate && npm run smoke:business-loans",
+    "smoke": "npm run smoke:purchase-tick && npm run smoke:events && npm run smoke:hospitality && npm run smoke:cafe && npm run smoke:real-estate && npm run smoke:business-loans && npm run smoke:bankruptcy",
     "smoke:purchase-tick": "tsx scripts/smoke-purchase-tick.ts",
     "smoke:events": "tsx scripts/smoke-events.ts",
     "smoke:hospitality": "tsx scripts/smoke-hospitality.ts",
     "smoke:cafe": "tsx scripts/smoke-cafe.ts",
     "smoke:real-estate": "tsx scripts/smoke-real-estate.ts",
-    "smoke:business-loans": "tsx scripts/smoke-business-loans.ts"
+    "smoke:business-loans": "tsx scripts/smoke-business-loans.ts",
+    "smoke:bankruptcy": "tsx scripts/smoke-bankruptcy.ts"
   },
   "dependencies": {
+    "clsx": "2.1.1",
+    "date-fns": "3.6.0",
+    "immer": "10.1.1",
+    "nanoid": "5.0.7",
     "react": "18.3.1",
     "react-dom": "18.3.1",
     "react-router-dom": "6.26.2",
-    "zustand": "4.5.2",
-    "immer": "10.1.1",
-    "clsx": "2.1.1",
     "tailwind-merge": "2.3.0",
-    "date-fns": "3.6.0",
-    "nanoid": "5.0.7"
+    "zustand": "4.5.2"
   },
   "devDependencies": {
     "@types/node": "20.12.12",

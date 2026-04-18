@@ -421,8 +421,91 @@ v0.7 made businesses drivable; v0.7.1/.2/.3 expanded the map they live on. v0.8 
 - **Regression canary.** Full smoke suite (`purchase-tick`, `events`, `hospitality`, `cafe`, `real-estate`, `business-loans`) green. `npx tsc --noEmit` clean. `npm run lint` clean (one pre-existing warning in `finance.ts`). `npm run build` 499.66 KB JS / 151.39 KB gz, 439 modules transformed.
 - **No save migration needed.** v0.8.0 is purely additive on the business registry side — new types aren't in any existing save, so no save-schema bump. Owning businesses continues to write `Business { type: BusinessTypeId, state: ... }` records through the same `patchBusinessState` path.
 
-### v0.9 — Manager hiring + franchise + cross-market portfolio (next)
-With 22 types available, the bottleneck is attention: a player can't actively run 22 businesses. v0.9 is about crossing the threshold from *operator* to *portfolio owner*.
+### v0.8.1 — Visibility patch ✅
+v0.8.0 landed the 22-type roster but players complained they couldn't tell what was happening in their empire: was the store empty because of bad pricing, bad staffing, or just a slow week? v0.8.1 is a diagnostics-only patch that makes every existing lever legible. No new business types; no new simulation mechanics; every change surfaces data the engine was already computing.
+
+- **`selectWealthBreakdown(state)`.** New selector returning `{ personalCash, businessCash, realEstateEquity, mortgageDebt, businessLoanDebt, totalDebt, grossAssets, netWorth }`. `selectNetWorth` now delegates to it for a single source of truth. Dashboard renders a "Where your money is" card with tone-colored asset / debt rows and a hideIfZero flag so early-game players don't see a mortgage row that says $0.
+- **Traffic instrumentation on storefront engines.** `BusinessKPIs` gains optional `weeklyVisitors`, `weeklyUnitsSold`, `weeklyConversion` fields. `retailBase.ts` (shared 8-subtype retail engine) and `retail.ts` (`corner_store`) accumulate hourly visitors & units-sold into weekly accumulators, publish them on `onWeek`, then reset. Other storefront engines (cafe, bar, restaurant, nightclub, cinema, food_truck, pizza_shop) stay uninstrumented this patch — they all get re-touched in v0.9 alongside the channelized-marketing rework, so doubling the work now is wasteful. BusinessDetailPage's `TrafficConversionCard` renders the numbers for instrumented types and a "coming in v0.9" placeholder for the rest, so UI never breaks.
+- **Staff tab transparency.** The roster Card subtitle now shows `Service ${0..1} → ×${0.6..1.6} conversion` — the exact staffing term the sim applies. Every applicant in the hiring pool shows a marginal-impact line: `Hiring → Service 32% → 41% · (+4.3% conversion)`, driven by `previewServiceAfterHire(current, newAptitude, 72)` (morale 72 matches `buildStaffRecord`).
+- **Understaffing warning banner.** `<StaffingWarningBanner biz={biz} />` at the top of the Overview tab. CRIT (loss-colored) when any required roster section is empty — the engines short-circuit to $0 revenue under `staff.length === 0`, which is easy to miss if you walked away from a just-opened store. WARN (amber) when all sections are filled but the weakest section's service is below the 0.5 reference, reporting the gap as a "~X% below potential conversion" estimate. Suppressed under a 10% threshold to avoid noise.
+- **Tier explainer text.** Every quality-tier / shelf / menu-program button in `CafeQualityTierCard`, `BarTierCard`, and `RestaurantProgramCard` has a hover tooltip listing exact cost/price/CSAT deltas (e.g. "Premium · +45% price, +35% cost, +25% wages. CSAT caps at 95"). An in-card prose line under the active tier gives the same info always-visible for touch devices. Happy Hour / ID Checks / Reservations / Menu Refresh buttons gain tooltips documenting the trade-off they make.
+- **Shipped changes, no sim impact.** `tsc --noEmit` clean. Existing saves load unchanged — the new KPI fields are optional, and the storage-key bump on the tutorial (`ma:tutorial:v0.8.0` → `v0.8.1`) is solo-player-safe (this is a single-player hobby build). No schema migration needed.
+
+### v0.9 — Failure & Flow ✅
+v0.8 made the world big; v0.8.1 made it legible. But the sim still has two structural gaps that a real tycoon game can't live without: **you can't actually lose** (negative cash just accumulates forever, loans never collapse to personal), and **you can't skip the boring parts** (auto-tick is the only time model, so late-empire play becomes a chore). v0.9 closes both, then pairs them with two quality-of-life wins that ride the same plumbing — market-aware recommendations and buy-vs-lease on commercial property.
+
+**1. Bankruptcy cascade.** A realistic failure path at the business and personal level.
+- `BusinessStatus = "operating" | "distressed" | "insolvent" | "liquidated"` on every business.
+- **Distressed** fires the moment biz `cash < -$5,000` for a single week; warning banner on BusinessDetailPage + dashboard, no mechanical effect yet.
+- **Insolvent** fires after **4 consecutive weeks** underwater. Engine triggers liquidation: business assets (inventory + fixtures book value) sold at **40% of book** to `liquidation_proceeds`; the spread goes to `liquidation_writeoff`. Any outstanding `BusinessLoan` balance left after the cash sweep collapses onto the player as `personalUnsecuredDebtCents` — the personal guarantee clause on SBA loans becoming real.
+- **Voluntary close** action on distressed biz: sells at **60% of book** (better than forced 40%), debt still collapses, but credit hit is −40 instead of −80. Creates a meaningful "eject early" decision.
+- **Personal bankruptcy** fires when `cash + liquidAssets + 0.5 × realEstateEquity < personalUnsecuredDebt × 0.25`. Effects: all real estate foreclosed at 90% of market value (mortgages paid off first), remaining unsecured debt discharged, credit → 300, `bankruptcyFlag` set with **7-year lockout** on new business loans + doubled down-payment requirements.
+- **Heir fallback.** If `player.children` has an eligible heir (age ≥ 18), the run continues as that heir with a clean balance sheet and a −20 `familyReputation` hit. If no eligible heir, game-over modal with a "Replay as new founder" button.
+- Closed-business graveyard view on `/business` with postmortem data (weeks alive, peak revenue, final cash).
+
+**2. Advance Day / Week / Event buttons.** Hybrid time model: auto-tick keeps running, fast-forward is opt-in.
+- Three buttons in the top bar: `Day ▸` / `Week ▸` / `Event ▸`.
+- `advanceUntil(predicate, maxTicks=336)` store action runs `tick()` synchronously until the predicate hits, a blocking event fires, or a 2-week safety cap is reached. Autosave fires once at burst end, not per-tick.
+- `event.blocking: boolean` flag on the `Event` type marks the categories that interrupt fast-forwards: distress warnings, macro-shock activation/expiry, rival territorial moves, personal lifecycle, major milestones.
+- `settings.pauseOnEvent: "all" | "blocking" | "never"` — default `"blocking"`. Late-empire players can flip to `"never"` when event spam stalls fast-forwards.
+
+**3. Market-aware recommendations.** Scoring function + MarketPage reorganization so the 22-type grid stops being a wall of buttons.
+- `scoreBizTypeForMarket(type, market, player) → { score: 0..1, reasons: string[], viable: boolean }` lives in `src/engine/market/recommendations.ts`.
+- Factors: demographic fit (population × income curve per type), competition (diminishing returns past 2 existing), archetype match (Coastal → restaurants + florists; Industrial → oil_gas + construction; Specialty Medical → hospital_clinic), halo benefits (own a café here → bar scores up), macro fit (pulses shift scores).
+- MarketPage reorganizes each market card into three stacks: **Good fits here** (top 5 scored), **Already in this market** (occupied slots), and **All types** (the current full grid, collapsed by default).
+- Tutorial cold-open uses the same scoring to pre-select the strongest corner_store / cafe pair under $35K.
+
+**4. Buy-vs-lease commercial space.** Wire the existing `buyProperty` + `Property.hostedBusinessId` plumbing into the new-business UI and the detail page — it's all sitting there, unused.
+- BuyBusinessDialog gets a **Lease (default) / Buy property** radio. Buy reveals available commercial properties in that market; startup cost = property price + fixtures; finance option reuses existing mortgage + business-loan infrastructure.
+- Lease-then-buy action on the Finance tab of an already-leased business when a commercial property of the right fit is listed in its market.
+- BusinessDetailPage Overview header gains a hosted-state indicator: **🏠 Owned space** or **📝 Leasing — $X/mo**. Hosted businesses show $0 rent on the weekly P&L with a tooltip explaining property taxes + maintenance still apply.
+- Selling a hosted property now fires a confirm dialog: "This property hosts [Biz Name]. Selling forces relocation (2-month lease deposit in this market) or closure." Auto-voluntary-close at 60% book if relocation funds insufficient.
+
+**Out of scope for v0.9 (moved):** channelized marketing, promotions, signage, loyalty, hours of operation → v0.10. Player skill wiring, SKU curation, supplier deals → v0.11. Managers / franchise / portfolio → v1.0.
+
+**Save compat.** Schema bump v6 → v7, additive migration: every `Business` gains `status: "operating"` + `insolvencyWeeks: 0`; every `PlayerCharacter` gains `personalUnsecuredDebtCents: 0`, `bankruptcyHistory: []`, `closedBusinessIds: []`, and an optional `bankruptcyFlag`; `GameState` gains `settings.pauseOnEvent: "blocking"` as default. No data loss.
+
+**Shipped implementation notes.**
+- Insolvency state machine lives in `src/engine/business/insolvency.ts`; the 4-week clock is driven by weekly roll-ups inside `stepTick` and deliberately ignores rival-owned businesses.
+- Liquidation proceeds and credit impact are centralised in `src/engine/business/liquidation.ts` (`RECOVERY_RATE` / `CREDIT_IMPACT`). `closeBusinessVoluntarily` reuses the same cleanup so the eject-early path shares one implementation.
+- Personal bankruptcy filing (`src/engine/player/bankruptcy.ts`) runs immediately after the liquidation cascade inside the same tick — this is what the `smoke:bankruptcy` regression proves end-to-end (distressed → insolvent → loan collapse → Chapter 7 → succession).
+- Advance controls wrap a single store action, `advanceUntil(predicate, maxTicks = 336)`; it short-circuits on blocking events and autosaves exactly once at burst end.
+- Recommendation scoring (`src/engine/market/recommendations.ts`) feeds three MarketPage stacks — *Good fits*, *Already in this market*, *All types* — all rendered from the same per-market card so the 22-type grid no longer walls off new players.
+- Buy-vs-lease is handled by `convertBusinessToOwned` / `convertBusinessToLease` / `sellHostedProperty` store actions plus the `ConvertToOwnedCard` + `SellHostedConfirmDialog` UI. Selling a hosted property always tries relocation first, falling back to voluntary close only when the 2-month lease deposit can't be funded from business + personal cash.
+
+### v0.10 — Marketing & Levers (next)
+v0.9 closed the failure and flow gaps — now players can actually lose, can skip the boring parts, and can reason about which market fits which business. v0.10 returns to the lever surface: the existing `marketingWeekly` slider is still a black-box single knob, and every sales lever below it is still missing. v0.10 builds the full marketing/lever surface that lets players tell a story with their business.
+
+**Channelized marketing** replacing the single slider:
+- Six channels — radio, social media, TV, magazines, out-of-home (billboards / transit), email / owned — each with its own `$/wk` input, demographic reach curve (age × income), saturation cap, and decay rate.
+- Market demographics extended: each `Market` gets `demographics: { medianAge, medianIncome, ageSkew, incomeSkew }`. Per-channel effectiveness = `dot(channelReach, marketDemographics)`, so TV is cheap reach for older / higher-income suburban markets, social is cheap reach for young urban markets, etc.
+- Per-business `marketingScoreByChannel: Record<Channel, number>` replaces the scalar `marketingScore`; decay is per-channel so a one-off radio burst doesn't compete with a sustained social program.
+
+**Sales levers** on every storefront/hospitality biz:
+- **Promotions / store-wide sales.** Percent-off knob (0–50%) with scheduled start/end weeks. Boosts conversion and weekly traffic at the cost of margin; CSAT nudge downward during the sale, upward for a few weeks after ("deal memory").
+- **Signage upgrade tiers.** One-time capex purchases (Banner → Lit Sign → Digital Marquee) that raise the base traffic capture rate for the biz's location. Tiered cost curve; decays very slowly.
+- **Loyalty programs.** Per-biz toggle + tier. Trades a small per-transaction discount for repeat-visit frequency lift, modeled as a `repeatCustomerShare` term that reduces the churn component of weekly traffic.
+- **Hours of Operation.** Per-biz schedule (open/close per day-of-week). Shorter hours save labor but cap peak-window revenue; 24/7 adds a graveyard labor premium and a small CSAT bump for convenience.
+
+### v0.11 — Progression (deferred from v0.9)
+The `PlayerCharacter.skills` map has lived in types since v0.1 and `addSkillXp` has lived in `src/engine/player/skills.ts` since v0.1 — but neither is wired to gameplay. v0.11 makes the player's six skills actually matter, and adds the inventory levers players expect from a sim of this shape.
+
+**Skill system wire-in.**
+- Six skills (`management, negotiation, finance, charisma, tech, operations`) gain per-skill XP accrual on relevant activity:
+  - `management` → per active week running ≥ 1 biz with staff
+  - `negotiation` → per lease signed, property purchase, rival M&A deal
+  - `finance` → per loan taken, per in-game year survived
+  - `charisma` → per marketing-active week, per CSAT above 80
+  - `tech` → per week running tech_startup / gaming_studio / military_tech
+  - `operations` → per week running a manufacturing / heavy-industry biz
+- Skills feed back through `skillEffectiveness(value) → 0..1` S-curve multipliers at existing sim chokepoints: staffing morale decay, marketing effectiveness, negotiated prices on property listings, tick-level CSAT ceiling, loan rate spreads.
+
+**SKU curation.** Players can add/drop SKUs from a biz's catalog (currently fixed per subtype). Each SKU has a `demographicFit: { ageSkew, incomeSkew }` curve. Dropping a bad-fit SKU can lift margin; adding a right-fit SKU can lift traffic. Per-subtype "SKU pool" defines what's available.
+
+**Supplier deals.** Per biz-type, 2–4 suppliers with `{ minMonthlySpendCents, costMultiplier }` trade-offs. Exclusive deal: 1 supplier at a time per biz. Meet the minimum monthly → per-SKU cost drops 4–12%. Miss the minimum → pay the penalty month. `negotiation` skill lowers the minimum threshold.
+
+### v1.0 — Portfolio owner (deferred from v0.9)
+With 22 types available and marketing levers in place, the bottleneck becomes attention: a player can't actively run 22 businesses. v1.0 is about crossing the threshold from *operator* to *portfolio owner*.
 - **Manager / GM hiring.** Assign a manager to a business; tick runs at ~85% of hands-on efficiency but needs no active attention. Fee = `salary + bonus on quarterly profit`.
 - **Clone / franchise flow.** Open a 2nd location of an existing business type at a reduced startup cost (shared brand, negotiated supplier contracts). A property-hosted store carries quality benefits to its clone.
 - **Cross-market portfolio view.** A dashboard that rolls up every business the player owns with a heatmap by market and a stacked P&L.
