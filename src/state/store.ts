@@ -11,9 +11,12 @@ import type {
   Business,
   BusinessTypeId,
   Cents,
+  DayOfWeek,
+  DayHoursValue,
   GameSettings,
   GameSpeed,
   GameState,
+  HoursSchedule,
   Id,
   MacroEventId,
   MarketingChannel,
@@ -106,6 +109,18 @@ interface GameActions {
     channel: MarketingChannel,
     weeklyCents: Cents,
   ) => void;
+  /**
+   * v0.10 — set the hours schedule for a single day on a business. Creates
+   * the LeverState lazily if absent. The engine reads `leversOf(biz).hours`
+   * every tick, so edits apply on the next `onHour`.
+   */
+  setBusinessDayHours: (
+    id: Id,
+    day: DayOfWeek,
+    value: DayHoursValue,
+  ) => void;
+  /** v0.10 — replace the entire hours schedule (used by quick-presets). */
+  setBusinessHoursSchedule: (id: Id, schedule: HoursSchedule) => void;
   /** Voluntarily close a player-owned business — 60% of book recovered, credit -40. */
   closeBusinessVoluntarily: (
     id: Id,
@@ -216,35 +231,14 @@ export const useGameStore = create<GameStore>()(
     advanceUntil: (target, maxTicks) => {
       const g = get().game;
       if (!g) return { ticksAdvanced: 0, stoppedOn: "dead" as AdvanceStop };
-      const startTick = g.clock.tick;
-      const prevEventsLen = g.events.length;
-      const res = engineAdvanceUntil(g, target, maxTicks);
-      // Temporary diagnostic for task #71 (Day/Week only advances 1 hour).
-      // Logs the full round-trip: engine-reported advance + any halting
-      // event so we can see what's tripping early returns on live saves.
-      // Safe to remove once the cause is identified.
-      if (typeof console !== "undefined") {
-        const haltEvents = res.state.events
-          .slice(Math.min(prevEventsLen, res.state.events.length))
-          .map((e) => ({
-            kind: e.kind,
-            title: e.title,
-            blocking: e.blocking ?? false,
-            dismissed: e.dismissed,
-          }));
-        console.debug("[advanceUntil]", {
-          target,
-          pauseOnEvent: g.settings?.pauseOnEvent ?? "blocking",
-          startTick,
-          endTick: res.state.clock.tick,
-          ticksAdvanced: res.ticksAdvanced,
-          stoppedOn: res.stoppedOn,
-          prevSpeed: g.clock.speed,
-          playerAlive: res.state.player.alive,
-          newEvents: haltEvents.slice(0, 5),
-          newEventsCount: haltEvents.length,
-        });
+      // Guard: if the lineage has already ended (player dead + no heir
+      // seated by a prior succession pass), fast-forward is a no-op. The
+      // engine's dead-guard would otherwise silently halt every click at
+      // +1 tick — the UI shows the terminal banner instead.
+      if (!g.player.alive) {
+        return { ticksAdvanced: 0, stoppedOn: "dead" as AdvanceStop };
       }
+      const res = engineAdvanceUntil(g, target, maxTicks);
       set((s) => {
         // Replace the whole game slice — engineAdvanceUntil returns a
         // fully-settled snapshot covering businesses, properties,
@@ -566,6 +560,39 @@ export const useGameStore = create<GameStore>()(
         }
         const clamped = Math.max(0, Math.round(weeklyCents)) as Cents;
         biz.levers.marketingByChannel[channel] = clamped;
+      });
+    },
+
+    setBusinessDayHours: (id, day, value) => {
+      set((s) => {
+        if (!s.game) return;
+        const biz = s.game.businesses[id];
+        if (!biz) return;
+        if (!biz.levers) {
+          biz.levers = defaultLeversForBusinessType(biz.type);
+        }
+        // Normalize: if value is a DayHours range, clamp to valid window.
+        let next: DayHoursValue;
+        if (value === "closed" || value === "24h") {
+          next = value;
+        } else {
+          const open = Math.max(0, Math.min(23, Math.floor(value.open)));
+          const close = Math.max(open + 1, Math.min(24, Math.floor(value.close)));
+          next = { open, close };
+        }
+        biz.levers.hours[day] = next;
+      });
+    },
+
+    setBusinessHoursSchedule: (id, schedule) => {
+      set((s) => {
+        if (!s.game) return;
+        const biz = s.game.businesses[id];
+        if (!biz) return;
+        if (!biz.levers) {
+          biz.levers = defaultLeversForBusinessType(biz.type);
+        }
+        biz.levers.hours = { ...schedule };
       });
     },
 

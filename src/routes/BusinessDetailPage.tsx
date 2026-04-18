@@ -30,6 +30,9 @@ import { pickName } from "@/data/names";
 import type {
   Business,
   Cents,
+  DayHoursValue,
+  DayOfWeek,
+  HoursSchedule,
   LedgerEntry,
   Market,
   MarketingChannel,
@@ -45,8 +48,15 @@ import { priceAttractiveness } from "@/engine/economy/market";
 import { haloContribution } from "@/engine/economy/reputation";
 import { ECONOMY } from "@/engine/economy/constants";
 import {
+  allHours,
+  defaultHospitalityHours,
+  defaultRetailHours,
   effectiveMarketingScore,
+  hoursCsatBonus,
+  laborHoursMultiplier,
+  leverKindFor,
   leversOf,
+  scheduledHoursPerWeek,
   totalWeeklyMarketing,
 } from "@/engine/business/leverState";
 import {
@@ -59,13 +69,20 @@ import { MENU_LABELS } from "@/data/menu";
 import { DRINK_LABELS } from "@/data/barDrinks";
 import { DISH_LABELS } from "@/data/restaurantMenu";
 
-type TabKey = "overview" | "inventory" | "staff" | "marketing" | "finance";
+type TabKey =
+  | "overview"
+  | "inventory"
+  | "staff"
+  | "marketing"
+  | "hours"
+  | "finance";
 
 const TAB_LABELS: Record<TabKey, string> = {
   overview: "Overview",
   inventory: "Inventory",
   staff: "Staff",
   marketing: "Marketing",
+  hours: "Hours",
   finance: "Finance",
 };
 
@@ -91,8 +108,15 @@ export function BusinessDetailPage() {
   };
   const marketName = game.markets[biz.locationId]?.name ?? biz.locationId;
 
-  // Corner-store has no separate inventory tab label; every type uses the same 5 tabs.
-  const tabs: TabKey[] = ["overview", "inventory", "staff", "marketing", "finance"];
+  // Every type uses the same 6 tabs — Hours lever (v0.10) gets its own tab.
+  const tabs: TabKey[] = [
+    "overview",
+    "inventory",
+    "staff",
+    "marketing",
+    "hours",
+    "finance",
+  ];
 
   return (
     <div className="space-y-4">
@@ -148,6 +172,7 @@ export function BusinessDetailPage() {
       {tab === "inventory" && <InventoryTab biz={biz} onPatch={onPatch} />}
       {tab === "staff" && <StaffTab biz={biz} onPatch={onPatch} />}
       {tab === "marketing" && <MarketingTab biz={biz} />}
+      {tab === "hours" && <HoursTab biz={biz} />}
       {tab === "finance" && <FinanceTab biz={biz} />}
     </div>
   );
@@ -1988,6 +2013,301 @@ function MarketingChannelRow({
         />
       </div>
     </div>
+  );
+}
+
+// ===== Hours tab =====
+
+const DAY_LABELS: Record<DayOfWeek, string> = {
+  0: "Sun",
+  1: "Mon",
+  2: "Tue",
+  3: "Wed",
+  4: "Thu",
+  5: "Fri",
+  6: "Sat",
+};
+
+const DAY_LABELS_FULL: Record<DayOfWeek, string> = {
+  0: "Sunday",
+  1: "Monday",
+  2: "Tuesday",
+  3: "Wednesday",
+  4: "Thursday",
+  5: "Friday",
+  6: "Saturday",
+};
+
+const DAYS_IN_WEEK: DayOfWeek[] = [1, 2, 3, 4, 5, 6, 0]; // Mon-first layout
+
+function formatHour(h: number): string {
+  if (h === 0 || h === 24) return "12am";
+  if (h === 12) return "12pm";
+  if (h < 12) return `${h}am`;
+  return `${h - 12}pm`;
+}
+
+function summarizeDay(v: DayHoursValue): string {
+  if (v === "closed") return "Closed";
+  if (v === "24h") return "24 hrs";
+  return `${formatHour(v.open)} – ${formatHour(v.close)}`;
+}
+
+function HoursTab({ biz }: { biz: Business }) {
+  const setDayHours = useGameStore((s) => s.setBusinessDayHours);
+  const setSchedule = useGameStore((s) => s.setBusinessHoursSchedule);
+
+  const levers = leversOf(biz);
+  const schedule = levers.hours;
+
+  const weeklyHours = scheduledHoursPerWeek(schedule);
+  const laborMul = laborHoursMultiplier(schedule);
+  const csatBonus = hoursCsatBonus(schedule);
+
+  // Reference labor multiplier is "9am-9pm 7 days/week" (84 hrs reference).
+  // laborMul > 1 means you're open more hours than the reference (or running
+  // graveyard shifts). < 1 means a shorter workweek.
+  const laborVsRefPct = (laborMul - 1) * 100;
+
+  const kind = leverKindFor(biz.type);
+
+  const presets: Array<{ label: string; schedule: HoursSchedule; hint: string }> = [
+    {
+      label: "Retail 9-9",
+      schedule: defaultRetailHours(),
+      hint: "Open 9am – 9pm, seven days",
+    },
+    {
+      label: "Hospitality",
+      schedule: defaultHospitalityHours(),
+      hint: "Later close Fri/Sat",
+    },
+    {
+      label: "24/7",
+      schedule: allHours(),
+      hint: "Always open — +2 CSAT, max labor cost",
+    },
+  ];
+
+  return (
+    <div className="space-y-4">
+      <Card
+        title="Hours of operation"
+        subtitle={
+          kind === "alwaysOn"
+            ? "This business type is designed to run 24/7. Closing hours here will cut revenue."
+            : "Open hours gate revenue. Shorter weeks cut labor cost; graveyard shifts (before 6am / after 10pm) pay a 1.25× wage premium."
+        }
+      >
+        <div className="grid grid-cols-3 gap-3 text-center">
+          <div className="rounded-lg border border-ink-800 bg-ink-900/40 px-3 py-2">
+            <div className="text-[11px] text-ink-400 uppercase tracking-wide">
+              Weekly hours
+            </div>
+            <div className="text-xl font-bold text-ink-50 font-mono tabular-nums">
+              {weeklyHours}
+              <span className="text-[11px] text-ink-400 font-normal"> / 168</span>
+            </div>
+          </div>
+          <div className="rounded-lg border border-ink-800 bg-ink-900/40 px-3 py-2">
+            <div className="text-[11px] text-ink-400 uppercase tracking-wide">
+              Labor cost
+            </div>
+            <div
+              className={
+                "text-xl font-bold font-mono tabular-nums " +
+                (laborVsRefPct > 5
+                  ? "text-loss"
+                  : laborVsRefPct < -5
+                    ? "text-money"
+                    : "text-ink-50")
+              }
+            >
+              {laborVsRefPct >= 0 ? "+" : ""}
+              {laborVsRefPct.toFixed(0)}%
+            </div>
+            <div className="text-[10px] text-ink-500 mt-0.5">vs 9-9 daily ref</div>
+          </div>
+          <div className="rounded-lg border border-ink-800 bg-ink-900/40 px-3 py-2">
+            <div className="text-[11px] text-ink-400 uppercase tracking-wide">
+              CSAT bonus
+            </div>
+            <div
+              className={
+                "text-xl font-bold font-mono tabular-nums " +
+                (csatBonus > 0 ? "text-money" : "text-ink-50")
+              }
+            >
+              {csatBonus > 0 ? `+${csatBonus}` : "0"}
+            </div>
+            <div className="text-[10px] text-ink-500 mt-0.5">
+              {csatBonus === 2
+                ? "24/7 bonus"
+                : csatBonus === 1
+                  ? "≥140 hrs/wk"
+                  : "no bonus"}
+            </div>
+          </div>
+        </div>
+      </Card>
+
+      <Card title="Quick presets" subtitle="Overwrites every day">
+        <div className="flex flex-wrap gap-2">
+          {presets.map((p) => (
+            <button
+              key={p.label}
+              type="button"
+              onClick={() => setSchedule(biz.id, p.schedule)}
+              className="text-xs px-3 py-1.5 rounded-lg border border-ink-700 bg-ink-900/40 hover:border-accent hover:text-ink-50 text-ink-200 transition-colors"
+              title={p.hint}
+            >
+              {p.label}
+            </button>
+          ))}
+        </div>
+        <p className="text-[11px] text-ink-400 mt-2">
+          Engine picks up schedule edits on the next hour — no restart needed.
+        </p>
+      </Card>
+
+      <Card title="Schedule" subtitle="Per-day open / close hours">
+        <div className="flex flex-col gap-2">
+          {DAYS_IN_WEEK.map((d) => (
+            <DayHoursRow
+              key={d}
+              day={d}
+              value={schedule[d]}
+              onChange={(next) => setDayHours(biz.id, d, next)}
+            />
+          ))}
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+function DayHoursRow({
+  day,
+  value,
+  onChange,
+}: {
+  day: DayOfWeek;
+  value: DayHoursValue;
+  onChange: (next: DayHoursValue) => void;
+}) {
+  const isClosed = value === "closed";
+  const is247 = value === "24h";
+  const isRange = !isClosed && !is247;
+
+  // The open/close pickers drive a fresh DayHours object; toggling Closed
+  // or 24h replaces the whole value. Re-entering "Range" restores 9-21.
+  const range: { open: number; close: number } = isRange
+    ? value
+    : { open: 9, close: 21 };
+
+  return (
+    <div className="rounded-xl border border-ink-800 bg-ink-900/40 p-3">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <div className="flex items-center gap-2 min-w-0">
+          <div className="text-sm font-semibold text-ink-50 w-[88px] shrink-0">
+            {DAY_LABELS_FULL[day]}
+          </div>
+          <div className="text-[11px] text-ink-400 font-mono">
+            {summarizeDay(value)}
+          </div>
+        </div>
+        <div className="flex gap-1 shrink-0">
+          <ModeButton
+            active={isRange}
+            onClick={() => onChange({ open: range.open, close: range.close })}
+            label="Range"
+          />
+          <ModeButton
+            active={is247}
+            onClick={() => onChange("24h")}
+            label="24h"
+          />
+          <ModeButton
+            active={isClosed}
+            onClick={() => onChange("closed")}
+            label="Closed"
+          />
+        </div>
+      </div>
+
+      {isRange && (
+        <div className="mt-3 grid grid-cols-2 gap-3">
+          <label className="flex flex-col gap-1">
+            <span className="text-[10px] uppercase tracking-wide text-ink-400">
+              Open
+            </span>
+            <select
+              value={range.open}
+              onChange={(e) => {
+                const open = Number(e.target.value);
+                const close = Math.max(open + 1, Math.min(24, range.close));
+                onChange({ open, close });
+              }}
+              className="bg-ink-900 border border-ink-700 rounded-md px-2 py-1 text-sm text-ink-50 focus:border-accent focus:outline-none"
+              aria-label={`${DAY_LABELS[day]} open hour`}
+            >
+              {Array.from({ length: 24 }, (_, i) => i).map((h) => (
+                <option key={h} value={h}>
+                  {formatHour(h)}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-[10px] uppercase tracking-wide text-ink-400">
+              Close
+            </span>
+            <select
+              value={range.close}
+              onChange={(e) => {
+                const close = Number(e.target.value);
+                const open = Math.min(range.open, Math.max(0, close - 1));
+                onChange({ open, close });
+              }}
+              className="bg-ink-900 border border-ink-700 rounded-md px-2 py-1 text-sm text-ink-50 focus:border-accent focus:outline-none"
+              aria-label={`${DAY_LABELS[day]} close hour`}
+            >
+              {Array.from({ length: 24 }, (_, i) => i + 1).map((h) => (
+                <option key={h} value={h}>
+                  {formatHour(h)}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ModeButton({
+  active,
+  onClick,
+  label,
+}: {
+  active: boolean;
+  onClick: () => void;
+  label: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={
+        "text-[11px] px-2 py-1 rounded border transition-colors " +
+        (active
+          ? "border-accent bg-accent/15 text-accent"
+          : "border-ink-700 bg-ink-900/40 text-ink-300 hover:text-ink-100 hover:border-ink-500")
+      }
+      aria-pressed={active}
+    >
+      {label}
+    </button>
   );
 }
 
