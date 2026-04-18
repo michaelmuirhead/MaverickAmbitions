@@ -197,7 +197,14 @@ assert(raw > nw, "Net worth reflects loan debt as a negative contribution");
 console.log(`\n[7] Missed-payment path`);
 let stress = newGame({ seed: "bloan-stress", founderName: "Tester", difficulty: 3 });
 const stressBizId = nanoid(8);
-const stressMkt = Object.values(stress.markets)[0]!;
+// v0.10.1: pick the weakest-desirability market so that even with the
+// post-balance corner-store economy the business bleeds cash during
+// the month and can't service the loan. Earlier the test used "first
+// market" which — after the balance fix — could accidentally be a
+// profitable neighborhood and mask a genuine miss.
+const stressMkt = Object.values(stress.markets).sort(
+  (a, b) => a.desirability - b.desirability,
+)[0]!;
 const stressMod = getBusinessModule("corner_store");
 const stressBiz = stressMod.create({
   id: stressBizId,

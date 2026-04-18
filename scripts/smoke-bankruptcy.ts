@@ -82,8 +82,11 @@ const biz: Business = cornerMod.create({
 });
 
 // Force cash well below the distress threshold so the state machine
-// engages on the very first weekly tick.
-biz.cash = (INSOLVENCY_DISTRESS_THRESHOLD_CENTS - 1_000_00) as Cents;
+// engages on the very first weekly tick. v0.10.1: gap widened from
+// $1k to $15k so even a profitable post-balance corner store
+// (~$2k/wk swing in a strong market) can't dig itself out inside
+// one week — we're testing the insolvency machine, not the economy.
+biz.cash = (INSOLVENCY_DISTRESS_THRESHOLD_CENTS - 15_000_00) as Cents;
 
 // Fat loan to make collapse produce real unsecured debt.
 const loanFace = 200_000_00;
