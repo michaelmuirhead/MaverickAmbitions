@@ -55,6 +55,10 @@ export function createFounder(params: {
     generation: 1,
     alive: true,
     birthTick: params.tick - 24 * 365 * 24, // 24 years pre-epoch
+    // v0.9 — bankruptcy bookkeeping starts clean.
+    personalUnsecuredDebtCents: 0,
+    bankruptcyHistory: [],
+    closedBusinesses: {},
   };
 }
 

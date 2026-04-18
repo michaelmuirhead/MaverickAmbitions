@@ -45,7 +45,6 @@ const config: ProjectModuleConfig = {
 
   startingCash: dollars(90_000),
   rentMultiplier: 4.0, // secure facility
-  marketingWeekly: dollars(2_200),
 
   initialStaff: (bizId) =>
     buildStaff(bizId, [

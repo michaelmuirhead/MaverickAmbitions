@@ -8,6 +8,7 @@
 import { nanoid } from "nanoid";
 
 import type {
+  BusinessTypeId,
   GameState,
   Id,
   MacroState,
@@ -16,13 +17,15 @@ import type {
   Region,
 } from "@/types/game";
 
+import { MARKET_DEMOGRAPHICS } from "@/data/marketDemographics";
 import { STARTER_MARKETS } from "@/data/markets";
 import { LAUNCH_REGION_ID, STARTER_REGIONS } from "@/data/regions";
 import { createRng } from "@/lib/rng";
 
+import { defaultLeversForBusinessType } from "../business/leverState";
 import { generatePropertiesForMarket } from "../economy/realEstate";
 
-export const CURRENT_SAVE_VERSION = 6;
+export const CURRENT_SAVE_VERSION = 8;
 
 type MigrationFn = (state: unknown) => unknown;
 
@@ -204,7 +207,137 @@ const MIGRATIONS: Record<number, MigrationFn> = {
       properties,
     };
   },
+  // v6 -> v7: v0.9 Failure & Flow. Additive fields on existing records —
+  // no data loss.
+  //   1. Every Business gains `status: "operating"` + `insolvencyWeeks: 0`.
+  //   2. PlayerCharacter gains `personalUnsecuredDebtCents: 0`,
+  //      `bankruptcyHistory: []`, and `closedBusinesses: {}`. `bankruptcyFlag`
+  //      stays undefined (no active lockout).
+  //   3. GameState gains `settings: { pauseOnEvent: "blocking" }` if absent.
+  //
+  // Existing weekly KPI data is preserved; `peakWeeklyRevenue` stays
+  // undefined until the next weekly tick re-computes it.
+  6: (s) => {
+    const obj = (s as Record<string, unknown>) ?? {};
+
+    // 1. Upgrade every business with the new bankruptcy fields.
+    const businesses: Record<Id, Record<string, unknown>> = {
+      ...((obj.businesses as Record<Id, Record<string, unknown>>) ?? {}),
+    };
+    for (const bizId of Object.keys(businesses)) {
+      const biz = businesses[bizId] ?? {};
+      businesses[bizId] = {
+        ...biz,
+        status: typeof biz.status === "string" ? biz.status : "operating",
+        insolvencyWeeks:
+          typeof biz.insolvencyWeeks === "number" ? biz.insolvencyWeeks : 0,
+      };
+    }
+
+    // 2. Upgrade the player with bankruptcy bookkeeping fields.
+    const player = (obj.player as Record<string, unknown>) ?? {};
+    const migratedPlayer: Record<string, unknown> = {
+      ...player,
+      personalUnsecuredDebtCents:
+        typeof player.personalUnsecuredDebtCents === "number"
+          ? player.personalUnsecuredDebtCents
+          : 0,
+      bankruptcyHistory: Array.isArray(player.bankruptcyHistory)
+        ? player.bankruptcyHistory
+        : [],
+      closedBusinesses:
+        player.closedBusinesses &&
+        typeof player.closedBusinesses === "object" &&
+        !Array.isArray(player.closedBusinesses)
+          ? player.closedBusinesses
+          : {},
+    };
+
+    // 3. Seed game-wide settings if absent.
+    const existingSettings = (obj.settings as Record<string, unknown>) ?? {};
+    const settings = {
+      pauseOnEvent:
+        typeof existingSettings.pauseOnEvent === "string" &&
+        ["all", "blocking", "never"].includes(
+          existingSettings.pauseOnEvent as string,
+        )
+          ? existingSettings.pauseOnEvent
+          : "blocking",
+    };
+
+    return {
+      ...obj,
+      version: 7,
+      businesses,
+      player: migratedPlayer,
+      settings,
+    };
+  },
+  // v7 -> v8: v0.10 Marketing & Levers. The pre-v0.10 single
+  // `marketingWeekly` / `marketingScore` scalars on every per-type state
+  // blob are replaced by a shared `LeverState` on `Business.levers` with
+  // a six-channel marketing map, hours schedule, signage/loyalty tiers,
+  // and active-promo slot. Per the v0.10 scope decision, legacy marketing
+  // spend is *not* preserved — the player restarts channel budgeting
+  // from zero with the richer UI. Market demographics are also back-
+  // filled from STARTER_MARKETS so the demographic-weighted channel
+  // effectiveness model has data to read.
+  //
+  // Summary of field changes:
+  //   1. Every Business gains a fresh `levers: LeverState` (retail default
+  //      hours for storefronts, hospitality default for food/nightlife,
+  //      24/7 for hospital/clinic, retail otherwise).
+  //   2. Any legacy `state.marketingWeekly` / `state.marketingScore` keys
+  //      on per-type state blobs are stripped (UI now reads from levers).
+  //   3. Every Market gains `demographics` copied from MARKET_DEMOGRAPHICS
+  //      (STARTER_MARKETS already carries them post-load, but saves
+  //      persisted pre-migration only have the base fields).
+  7: (s) => {
+    const obj = (s as Record<string, unknown>) ?? {};
+
+    // 1 + 2. Upgrade every business: strip legacy marketing scalars and
+    // seed a fresh LeverState tuned for the business kind.
+    const businesses: Record<Id, Record<string, unknown>> = {
+      ...((obj.businesses as Record<Id, Record<string, unknown>>) ?? {}),
+    };
+    for (const bizId of Object.keys(businesses)) {
+      const biz = businesses[bizId] ?? {};
+      const rawState = (biz.state as Record<string, unknown> | undefined) ?? {};
+      const {
+        marketingWeekly: _legacyWeekly,
+        marketingScore: _legacyScore,
+        ...cleanState
+      } = rawState;
+      void _legacyWeekly;
+      void _legacyScore;
+      businesses[bizId] = {
+        ...biz,
+        state: cleanState,
+        levers:
+          biz.levers ??
+          defaultLeversForBusinessType(biz.type as BusinessTypeId),
+      };
+    }
+
+    // 3. Back-fill market demographics on every retained market.
+    const existingMarkets = (obj.markets as Record<Id, Market>) ?? {};
+    const markets: Record<Id, Market> = {};
+    for (const [id, market] of Object.entries(existingMarkets)) {
+      markets[id] = {
+        ...market,
+        demographics: market.demographics ?? MARKET_DEMOGRAPHICS[id],
+      };
+    }
+
+    return {
+      ...obj,
+      version: 8,
+      businesses,
+      markets,
+    };
+  },
 };
+
 
 export function migrateSave(raw: unknown): GameState {
   const obj = raw as { version?: number };

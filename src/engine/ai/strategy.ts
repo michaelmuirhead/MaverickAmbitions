@@ -17,7 +17,10 @@ import type {
   AIRival,
   Business,
   BusinessTypeId,
+  Cents,
   GameState,
+  LeverState,
+  MarketingChannel,
   Tick,
 } from "@/types/game";
 
@@ -28,6 +31,11 @@ import {
   getAvailableBusinessTypes,
   getBusinessModule,
 } from "../business/registry";
+import {
+  defaultLeversForBusinessType,
+  leversOf,
+} from "../business/leverState";
+import { MARKETING_CHANNELS } from "@/data/marketingChannels";
 import { originateMortgage } from "../economy/realEstate";
 import { DIFFICULTY } from "./difficulty";
 import { PERSONALITIES } from "./personality";
@@ -311,6 +319,9 @@ export function applyMove(
         tick,
         seed: id,
       });
+      // v0.10: seed the shared sales-lever state for rival-owned biz too,
+      // using the per-type default kind.
+      biz.levers = defaultLeversForBusinessType(biz.type);
       const spend = mod.startup.startupCostCents;
       if (rival.netWorth < spend) {
         return {
@@ -348,20 +359,45 @@ export function applyMove(
     case "invest_marketing": {
       const biz = state.businesses[move.businessId];
       if (!biz) return { lastMove: { tick, description: "Noop" } };
-      const s = biz.state as unknown as {
-        marketingScore?: number;
-        marketingWeekly?: number;
+      // v0.10: rivals spread an increased marketing budget across the
+      // channels their personality favors. For now we use a simple even
+      // split across three broad-reach channels (radio / social / ooh);
+      // later iterations can route this by personality.
+      const currentLevers = leversOf(biz);
+      const perChannel = Math.round(move.amountCents / 3) as Cents;
+      const nextByChannel = { ...currentLevers.marketingByChannel };
+      for (const ch of ["radio", "social", "ooh"] as MarketingChannel[]) {
+        nextByChannel[ch] = Math.max(
+          nextByChannel[ch],
+          perChannel,
+        ) as Cents;
+        // Nudge the initial score up a touch so the move has a visible
+        // near-term traffic bump (otherwise the first tick's lift alone is
+        // imperceptible compared to the old scalar increment).
+        void MARKETING_CHANNELS[ch];
+      }
+      const nextLevers: LeverState = {
+        ...currentLevers,
+        marketingByChannel: nextByChannel,
+        marketingScoreByChannel: {
+          ...currentLevers.marketingScoreByChannel,
+          radio: Math.min(
+            1,
+            currentLevers.marketingScoreByChannel.radio + 0.1,
+          ),
+          social: Math.min(
+            1,
+            currentLevers.marketingScoreByChannel.social + 0.1,
+          ),
+          ooh: Math.min(
+            1,
+            currentLevers.marketingScoreByChannel.ooh + 0.1,
+          ),
+        },
       };
       const updated: Business = {
         ...biz,
-        state: {
-          ...(biz.state as object),
-          marketingScore: Math.min(1, (s.marketingScore ?? 0) + 0.15),
-          marketingWeekly: Math.max(
-            (s.marketingWeekly ?? 0),
-            move.amountCents,
-          ),
-        } as Record<string, unknown>,
+        levers: nextLevers,
       };
       return {
         businesses: { ...state.businesses, [biz.id]: updated },

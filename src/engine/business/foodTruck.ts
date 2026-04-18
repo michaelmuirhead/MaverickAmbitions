@@ -43,6 +43,11 @@ import {
   marketFootTraffic,
   priceAttractiveness,
 } from "../economy/market";
+import {
+  effectiveMarketingScore,
+  leversOf,
+  totalWeeklyMarketing,
+} from "./leverState";
 
 import type {
   BusinessStartupSpec,
@@ -92,9 +97,6 @@ export interface FoodTruckState {
   route: FoodTruckRoute;
   /** Weekly street-permit fee (cents). Replaces rent. */
   permitWeekly: Cents;
-  /** 0..1 marketing / social-media presence. */
-  marketingScore: number;
-  marketingWeekly: Cents;
   /** 0..1 truck condition — decays, refresh via capex. */
   truckCondition: number;
   /** Last weather roll (today). 0.3..1.3. */
@@ -199,8 +201,6 @@ function createBusiness(params: {
     ],
     route: "office_lunch",
     permitWeekly: dollars(350), // much less than fixed rent
-    marketingScore: 0.25,
-    marketingWeekly: dollars(100),
     truckCondition: 0.85,
     weatherToday: 1.0,
     weatherRolledOnDayIndex: -1,
@@ -308,10 +308,11 @@ function onHour(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
     countSameTypeCompetitors(ctx.world, biz) / 2, // food trucks don't crowd each other as hard
   );
 
+  const marketingScore = effectiveMarketingScore(leversOf(biz), market);
   const visitRate =
     ECONOMY.BASE_VISIT_RATE *
     1.8 * // street food has high intent
-    (0.5 + state.marketingScore) *
+    (0.5 + marketingScore) *
     (0.6 + state.truckCondition * 0.4) *
     weather *
     routeMul *
@@ -543,25 +544,20 @@ function onWeek(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
     ),
   );
 
-  if (state.marketingWeekly > 0) {
-    cash -= state.marketingWeekly;
+  // v0.10: channelized marketing.
+  const weeklyMarketing = totalWeeklyMarketing(leversOf(biz));
+  if (weeklyMarketing > 0) {
+    cash -= weeklyMarketing;
     ledgerEntries.push(
       ledger(
         `mkt-${biz.id}-${ctx.tick}`,
         ctx.tick,
-        -state.marketingWeekly,
+        -weeklyMarketing,
         "marketing",
         "Social / stickers",
         biz.id,
       ),
     );
-    state.marketingScore = Math.min(
-      1,
-      state.marketingScore * 0.62 +
-        Math.min(1, state.marketingWeekly / dollars(300)) * 0.38,
-    );
-  } else {
-    state.marketingScore *= 0.62;
   }
 
   const weeklyRevenue = state.weeklyRevenueAcc;
@@ -569,7 +565,7 @@ function onWeek(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
     state.weeklyCogsAcc +
     state.wagesAccrued +
     state.permitWeekly +
-    state.marketingWeekly;
+    weeklyMarketing;
   const pretax = weeklyRevenue - weeklyExpenses;
   const tax = corporateTax(pretax);
   if (tax > 0) {

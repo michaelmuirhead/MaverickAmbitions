@@ -29,6 +29,11 @@ import {
   priceAttractiveness,
 } from "../economy/market";
 import { hospitalityHalo } from "../economy/reputation";
+import {
+  effectiveMarketingScore,
+  leversOf,
+  totalWeeklyMarketing,
+} from "./leverState";
 import { STARTER_SKUS, type SkuId } from "@/data/items";
 
 import type {
@@ -47,12 +52,8 @@ export interface CornerStoreState {
   staff: CornerStoreStaff[];
   /** 0..1. Location quality chosen at open time. */
   locationQuality: number;
-  /** 0..1. Effect of marketing budget. */
-  marketingScore: number;
   /** Rent per month (cents). */
   rentMonthly: Cents;
-  /** Weekly marketing spend (cents). */
-  marketingWeekly: Cents;
   /** Weekly revenue accumulator (resets Sunday midnight). */
   weeklyRevenueAcc: Cents;
   /** Weekly COGS accumulator. */
@@ -140,9 +141,7 @@ function createBusiness(params: {
       },
     ],
     locationQuality: 0.55,
-    marketingScore: 0.2,
     rentMonthly: ECONOMY.BASE_RENT_MONTHLY_CENTS,
-    marketingWeekly: dollars(100),
     weeklyRevenueAcc: 0,
     weeklyCogsAcc: 0,
     wagesAccrued: 0,
@@ -247,9 +246,10 @@ function onHour(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
   // they get a traffic bump here too — the empire flywheel.
   const halo = hospitalityHalo(ctx.world, biz.ownerId, biz.locationId);
 
+  const marketingScore = effectiveMarketingScore(leversOf(biz), market);
   const visitRate =
     ECONOMY.BASE_VISIT_RATE *
-    (0.5 + state.marketingScore) *
+    (0.5 + marketingScore) *
     (0.5 + state.locationQuality) *
     (1 + halo) /
     density;
@@ -435,33 +435,28 @@ function onWeek(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
     ),
   );
 
-  // Marketing spend.
-  if (state.marketingWeekly > 0) {
-    cash -= state.marketingWeekly;
+  // Marketing spend: v0.10 sums across all six channels. The per-channel
+  // decay/lift runs hourly in `tickLevers` (engine/tick.ts) — this block
+  // just debits cash + records the ledger entry.
+  const weeklyMarketing = totalWeeklyMarketing(leversOf(biz));
+  if (weeklyMarketing > 0) {
+    cash -= weeklyMarketing;
     ledgerEntries.push(
       ledger(
         `mkt-${biz.id}-${ctx.tick}`,
         ctx.tick,
-        -state.marketingWeekly,
+        -weeklyMarketing,
         "marketing",
         "Weekly marketing",
         biz.id,
       ),
     );
-    // Marketing decays; new spend refreshes it.
-    state.marketingScore = Math.min(
-      1,
-      state.marketingScore * 0.6 +
-        Math.min(1, state.marketingWeekly / dollars(400)) * 0.4,
-    );
-  } else {
-    state.marketingScore *= 0.6;
   }
 
   // Compute weekly KPIs.
   const weeklyRevenue = state.weeklyRevenueAcc;
   const weeklyExpenses =
-    state.weeklyCogsAcc + state.wagesAccrued + weeklyRent + state.marketingWeekly;
+    state.weeklyCogsAcc + state.wagesAccrued + weeklyRent + weeklyMarketing;
   const weeklyProfitPretax = weeklyRevenue - weeklyExpenses;
 
   // Corporate tax on positive profit.

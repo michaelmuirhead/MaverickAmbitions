@@ -78,7 +78,6 @@ const BOOKSTORE: RetailCategoryConfig = {
   stockLabel: "Catalog Depth",
   startingCash: dollars(7_000),
   startingStaffCount: 2,
-  marketingWeekly: dollars(150),
   weeklyEventTrafficBump: 0.04, // author-night flavor
   skus: [
     { id: "hardcover",    name: "Hardcover New Release", cost: 1500, price: 3200, restockBatch: 40, popularity: 1.1 },
@@ -109,7 +108,6 @@ const ELECTRONICS: RetailCategoryConfig = {
   startingCash: dollars(18_000),
   startingStaffCount: 3,
   wageMultiplier: 1.15,
-  marketingWeekly: dollars(350),
   theftChancePerHour: 0.015,
   avgTheftLoss: dollars(600),
   returnRate: 0.05,
@@ -142,7 +140,6 @@ const FLORIST: RetailCategoryConfig = {
   startingCash: dollars(6_000),
   startingStaffCount: 2,
   wageMultiplier: 0.95,
-  marketingWeekly: dollars(120),
   perishable: true,
   seasonality: FLOWER_SEASONALITY,
   skus: [
@@ -173,7 +170,6 @@ const SUPERMARKET: RetailCategoryConfig = {
   startingCash: dollars(16_000),
   startingStaffCount: 5,
   wageMultiplier: 0.9,
-  marketingWeekly: dollars(400),
   perishable: true,
   theftChancePerHour: 0.008,
   avgTheftLoss: dollars(120),
@@ -206,7 +202,6 @@ const JEWELRY: RetailCategoryConfig = {
   startingCash: dollars(22_000),
   startingStaffCount: 3,
   wageMultiplier: 1.25,
-  marketingWeekly: dollars(450),
   theftChancePerHour: 0.004,
   avgTheftLoss: dollars(1_800),
   seasonality: JEWELRY_SEASONALITY,
@@ -238,7 +233,6 @@ const CLOTHING: RetailCategoryConfig = {
   startingCash: dollars(12_000),
   startingStaffCount: 3,
   wageMultiplier: 1.0,
-  marketingWeekly: dollars(300),
   returnRate: 0.08,
   seasonality: CLOTHING_SEASONALITY,
   skus: [
@@ -269,7 +263,6 @@ const SUIT: RetailCategoryConfig = {
   startingCash: dollars(14_000),
   startingStaffCount: 3,
   wageMultiplier: 1.2,
-  marketingWeekly: dollars(300),
   returnRate: 0.03,
   seasonality: SUIT_SEASONALITY,
   skus: [
@@ -300,7 +293,6 @@ const FURNITURE: RetailCategoryConfig = {
   startingCash: dollars(20_000),
   startingStaffCount: 4,
   wageMultiplier: 1.1,
-  marketingWeekly: dollars(450),
   returnRate: 0.04,
   seasonality: FURNITURE_SEASONALITY,
   skus: [

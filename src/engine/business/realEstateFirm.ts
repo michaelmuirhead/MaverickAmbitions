@@ -33,6 +33,12 @@ import { dollars } from "@/lib/money";
 import { ECONOMY } from "../economy/constants";
 import { corporateTax, ledger } from "../economy/finance";
 
+import {
+  effectiveMarketingScore,
+  leversOf,
+  totalWeeklyMarketing,
+} from "./leverState";
+
 import type {
   BusinessStartupSpec,
   BusinessTickContext,
@@ -79,8 +85,6 @@ export interface RealEstateState {
   agents: ReAgent[];
   /** Portfolio cap — bigger as firm grows (UI upgrades later). */
   portfolioCap: number;
-  marketingScore: number;
-  marketingWeekly: Cents;
   rentMonthly: Cents; // office rent
   prestige: number;
 
@@ -140,8 +144,6 @@ function createBusiness(params: {
       { id: `${params.id}-as1`, name: "Office Assistant", role: "assistant", hourlyWageCents: Math.round(ECONOMY.BASE_HOURLY_WAGE_CENTS * 1.0), skill: 45, morale: 66 },
     ],
     portfolioCap: 12,
-    marketingScore: 0.25,
-    marketingWeekly: dollars(900),
     rentMonthly: Math.round(ECONOMY.BASE_RENT_MONTHLY_CENTS * 1.5),
     prestige: 0.25,
 
@@ -231,6 +233,10 @@ function onWeek(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
   const ledgerEntries: LedgerEntry[] = [];
   const events: BusinessTickResult["events"] = [];
   let cash = biz.cash;
+  const marketingScore = effectiveMarketingScore(
+    leversOf(biz),
+    ctx.world.markets[biz.locationId],
+  );
 
   // Monthly occupancy flip for managed properties (rolled every 4 weeks).
   const weekIndex = Math.floor(ctx.tick / (24 * 7));
@@ -242,7 +248,7 @@ function onWeek(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
       if (p.occupied) {
         p.occupied = ctx.rng.chance(0.85);
       } else {
-        p.occupied = ctx.rng.chance(0.35 + state.marketingScore * 0.2);
+        p.occupied = ctx.rng.chance(0.35 + marketingScore * 0.2);
       }
     }
   }
@@ -331,7 +337,7 @@ function onWeek(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
   // Acquisition pipeline — weekly chance to buy a new property.
   const acquireChance = Math.min(
     0.7,
-    0.3 + state.prestige * 0.4 + state.marketingScore * 0.2,
+    0.3 + state.prestige * 0.4 + marketingScore * 0.2,
   );
   const spaceLeft = state.portfolio.length < state.portfolioCap;
   if (spaceLeft && ctx.rng.chance(acquireChance)) {
@@ -419,29 +425,23 @@ function onWeek(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
     ),
   );
 
-  if (state.marketingWeekly > 0) {
-    cash -= state.marketingWeekly;
+  const weeklyMarketing = totalWeeklyMarketing(leversOf(biz));
+  if (weeklyMarketing > 0) {
+    cash -= weeklyMarketing;
     ledgerEntries.push(
       ledger(
         `mkt-${biz.id}-${ctx.tick}`,
         ctx.tick,
-        -state.marketingWeekly,
+        -weeklyMarketing,
         "marketing",
         "Listings / portal fees",
         biz.id,
       ),
     );
-    state.marketingScore = Math.min(
-      1,
-      state.marketingScore * 0.6 +
-        Math.min(1, state.marketingWeekly / dollars(1_500)) * 0.4,
-    );
-  } else {
-    state.marketingScore *= 0.6;
   }
 
   const weeklyRevenue = state.weeklyRentAcc + state.weeklyFlipGainAcc;
-  const weeklyExpenses = state.wagesAccrued + weeklyOfficeRent + state.marketingWeekly;
+  const weeklyExpenses = state.wagesAccrued + weeklyOfficeRent + weeklyMarketing;
   const pretax = weeklyRevenue - weeklyExpenses;
   const tax = corporateTax(pretax);
   if (tax > 0) {
@@ -461,7 +461,7 @@ function onWeek(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
 
   // CSAT nudge.
   const target =
-    50 + state.prestige * 30 + state.marketingScore * 10;
+    50 + state.prestige * 30 + marketingScore * 10;
   const next =
     biz.kpis.customerSatisfaction +
     (Math.max(0, Math.min(90, target)) - biz.kpis.customerSatisfaction) * 0.15;

@@ -41,6 +41,11 @@ import {
 } from "../economy/market";
 import { hospitalityHalo } from "../economy/reputation";
 import { RESTAURANT_MENU, type DishId } from "@/data/restaurantMenu";
+import {
+  effectiveMarketingScore,
+  leversOf,
+  totalWeeklyMarketing,
+} from "./leverState";
 
 import {
   MENU_PROGRAM,
@@ -78,10 +83,7 @@ export interface RestaurantState {
   ambience: number;
   /** Tick when ambience last refreshed. */
   lastAmbienceRefreshTick: Tick;
-  /** 0..1 — marketing score. */
-  marketingScore: number;
   rentMonthly: Cents;
-  marketingWeekly: Cents;
 
   /** Weekly accumulators. */
   weeklyRevenueAcc: Cents;
@@ -239,9 +241,7 @@ function createBusiness(params: {
     locationQuality: 0.6,
     ambience: 0.75,
     lastAmbienceRefreshTick: params.tick,
-    marketingScore: 0.25,
     rentMonthly: Math.round(ECONOMY.BASE_RENT_MONTHLY_CENTS * 1.9),
-    marketingWeekly: dollars(400),
 
     weeklyRevenueAcc: 0,
     weeklyCogsAcc: 0,
@@ -393,10 +393,11 @@ function onHour(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
 
   // Walk-in covers resolved via traffic × visit rate × price mod.
   const remainingCap = Math.max(0, capacityThisHour - actualReserved);
+  const marketingScore = effectiveMarketingScore(leversOf(biz), market);
   const visitRate =
     ECONOMY.BASE_VISIT_RATE *
     1.2 *
-    (0.5 + state.marketingScore) *
+    (0.5 + marketingScore) *
     (0.6 + state.locationQuality) *
     csatBoost *
     (1 + ownHalo) *
@@ -541,13 +542,17 @@ function onDay(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
   const staleWeeks = state.ticksSinceMenuRefresh / 168;
   const stalePenalty = staleWeeks > 12 ? Math.min(8, staleWeeks - 12) : 0;
 
+  const csatMarketingScore = effectiveMarketingScore(
+    leversOf(biz),
+    ctx.world.markets[biz.locationId],
+  );
   const target =
     50 +
     service * 20 +
     kitchen * 30 +
     (state.ambience - 0.5) * 15 +
     (priceFairness - 1) * 10 +
-    (state.marketingScore - 0.3) * 4 +
+    (csatMarketingScore - 0.3) * 4 +
     tenureBump -
     stalePenalty -
     state.noShowsThisWeek * 0.4;
@@ -648,26 +653,21 @@ function onWeek(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
     ),
   );
 
-  // Marketing.
-  if (state.marketingWeekly > 0) {
-    cash -= state.marketingWeekly;
+  // v0.10: channelized marketing — sum across 6 sliders; per-channel
+  // decay + lift happen each hour in tickLevers().
+  const weeklyMarketing = totalWeeklyMarketing(leversOf(biz));
+  if (weeklyMarketing > 0) {
+    cash -= weeklyMarketing;
     ledgerEntries.push(
       ledger(
         `mkt-${biz.id}-${ctx.tick}`,
         ctx.tick,
-        -state.marketingWeekly,
+        -weeklyMarketing,
         "marketing",
         "Weekly marketing",
         biz.id,
       ),
     );
-    state.marketingScore = Math.min(
-      1,
-      state.marketingScore * 0.65 +
-        Math.min(1, state.marketingWeekly / dollars(500)) * 0.35,
-    );
-  } else {
-    state.marketingScore *= 0.65;
   }
 
   // License fee monthly.
@@ -703,7 +703,7 @@ function onWeek(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
     state.chef.weeklySalaryCents +
     state.tipsAccrued +
     weeklyRent +
-    state.marketingWeekly;
+    weeklyMarketing;
   const pretax = weeklyRevenue - weeklyExpenses;
   const tax = corporateTax(pretax);
   if (tax > 0) {

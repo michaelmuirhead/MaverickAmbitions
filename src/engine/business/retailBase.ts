@@ -51,6 +51,11 @@ import {
   marketFootTraffic,
   priceAttractiveness,
 } from "../economy/market";
+import {
+  effectiveMarketingScore,
+  leversOf,
+  totalWeeklyMarketing,
+} from "./leverState";
 
 import type {
   BusinessStartupSpec,
@@ -97,8 +102,6 @@ export interface RetailCategoryConfig {
   startingStaffCount: number;
   /** Hourly wage multiplier for staff. Jewelry/suit ~1.25, supermarket ~0.9. */
   wageMultiplier?: number;
-  /** Startup marketing weekly (cents). */
-  marketingWeekly: Cents;
 
   // Distinctive per-category overlays
   /** Monthly demand multipliers, 1..12 (Jan..Dec). 1.0 is neutral. */
@@ -139,9 +142,7 @@ export interface GenericRetailState {
   skus: Record<string, GenericRetailSku>;
   staff: GenericRetailStaff[];
   locationQuality: number;
-  marketingScore: number;
   rentMonthly: Cents;
-  marketingWeekly: Cents;
   weeklyRevenueAcc: Cents;
   weeklyCogsAcc: Cents;
   weeklyReturnsAcc: Cents;
@@ -217,11 +218,9 @@ export function makeRetailModule(
       skus,
       staff,
       locationQuality: 0.55,
-      marketingScore: 0.2,
       rentMonthly: Math.round(
         ECONOMY.BASE_RENT_MONTHLY_CENTS * config.rentMultiplier,
       ),
-      marketingWeekly: config.marketingWeekly,
       weeklyRevenueAcc: 0,
       weeklyCogsAcc: 0,
       weeklyReturnsAcc: 0,
@@ -325,10 +324,20 @@ export function makeRetailModule(
     const density = competitiveDensity(competitorsInMarket(ctx.world, biz));
     const service = avgService(state);
 
+    // v0.10: marketing score is derived from the per-channel lever state,
+    // weighted by this market's demographic mix. weeklyEventTrafficBump
+    // (bookstore author nights, etc.) is folded in as a flat additive term
+    // — the old code mutated state.marketingScore every week, which we've
+    // now replaced with a per-tick derivation.
+    const marketingScore = Math.min(
+      1,
+      effectiveMarketingScore(leversOf(biz), market) +
+        (config.weeklyEventTrafficBump ?? 0),
+    );
     const visitRate =
       ECONOMY.BASE_VISIT_RATE *
       config.visitRateMul *
-      (0.5 + state.marketingScore) *
+      (0.5 + marketingScore) *
       (0.5 + state.locationQuality) /
       density;
 
@@ -578,32 +587,22 @@ export function makeRetailModule(
       ),
     );
 
-    if (state.marketingWeekly > 0) {
-      cash -= state.marketingWeekly;
+    // v0.10: weekly marketing spend is now the sum of all 6 channel sliders.
+    // Per-channel score decay + lift happen in tickLevers() every hour, so
+    // no weekly score mutation is needed here. The weeklyEventTrafficBump
+    // is applied in onHour's visitRate formula instead of mutating a score.
+    const weeklyMarketing = totalWeeklyMarketing(leversOf(biz));
+    if (weeklyMarketing > 0) {
+      cash -= weeklyMarketing;
       ledgerEntries.push(
         ledger(
           `mkt-${biz.id}-${ctx.tick}`,
           ctx.tick,
-          -state.marketingWeekly,
+          -weeklyMarketing,
           "marketing",
           "Weekly marketing",
           biz.id,
         ),
-      );
-      state.marketingScore = Math.min(
-        1,
-        state.marketingScore * 0.6 +
-          Math.min(1, state.marketingWeekly / dollars(500)) * 0.4,
-      );
-    } else {
-      state.marketingScore *= 0.6;
-    }
-
-    // Weekly event bump (bookstore author nights etc.) is a marketing-equivalent boost.
-    if (config.weeklyEventTrafficBump && config.weeklyEventTrafficBump > 0) {
-      state.marketingScore = Math.min(
-        1,
-        state.marketingScore + config.weeklyEventTrafficBump,
       );
     }
 
@@ -612,7 +611,7 @@ export function makeRetailModule(
       state.weeklyCogsAcc +
       state.wagesAccrued +
       weeklyRent +
-      state.marketingWeekly +
+      weeklyMarketing +
       state.weeklyShrinkageAcc;
     const pretax = weeklyRevenue - weeklyExpenses;
     const tax = corporateTax(pretax);
@@ -635,11 +634,20 @@ export function makeRetailModule(
     const stock = computeStockLevel(state);
     const service = avgService(state);
     const wastePenalty = Math.min(10, state.weeklyWasteUnits / 10);
+    // v0.10: marketing's CSAT contribution uses the same derived score
+    // used in onHour, including the weekly event bump.
+    const csatMarketingScore = Math.min(
+      1,
+      effectiveMarketingScore(
+        leversOf(biz),
+        ctx.world.markets[biz.locationId],
+      ) + (config.weeklyEventTrafficBump ?? 0),
+    );
     const target =
       55 +
       service * 25 +
       stock * 10 +
-      state.marketingScore * 5 -
+      csatMarketingScore * 5 -
       wastePenalty;
     const next =
       biz.kpis.customerSatisfaction +

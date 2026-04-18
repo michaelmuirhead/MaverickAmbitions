@@ -38,6 +38,12 @@ import { ECONOMY } from "../economy/constants";
 import { corporateTax, ledger } from "../economy/finance";
 import { marketFootTraffic } from "../economy/market";
 
+import {
+  effectiveMarketingScore,
+  leversOf,
+  totalWeeklyMarketing,
+} from "./leverState";
+
 import type {
   BusinessStartupSpec,
   BusinessTickContext,
@@ -67,9 +73,6 @@ export interface HospitalClinicState {
   variableCostPerVisitCents: Cents;
   /** 0..1 care quality — lowers malpractice risk, raises CSAT. */
   careQuality: number;
-  /** 0..1 marketing score (local ads, referrals). */
-  marketingScore: number;
-  marketingWeekly: Cents;
   rentMonthly: Cents;
   /** Insurance billings that are pending payout next week. */
   pendingInsuranceCents: Cents;
@@ -155,8 +158,6 @@ function createBusiness(params: {
     insuranceBillingCents: dollars(220),
     variableCostPerVisitCents: dollars(55),
     careQuality: 0.68,
-    marketingScore: 0.25,
-    marketingWeekly: dollars(600),
     rentMonthly: Math.round(ECONOMY.BASE_RENT_MONTHLY_CENTS * 3.5),
     pendingInsuranceCents: 0,
 
@@ -216,6 +217,7 @@ function onHour(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
   const hourMul = hourTrafficCurve(hourOf(ctx.tick));
   const coverage = clinicianRatio(state);
   const clinicianSkill = avgClinicianSkill(state);
+  const marketingScore = effectiveMarketingScore(leversOf(biz), market);
 
   // Effective throughput — low coverage caps visits no matter how many people
   // show up.
@@ -224,7 +226,7 @@ function onHour(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
   const demand =
     (rawTraffic / 30) *
     hourMul *
-    (0.6 + state.marketingScore * 0.7) *
+    (0.6 + marketingScore * 0.7) *
     (0.7 + state.careQuality * 0.5);
   const visits = Math.min(throughputCap, Math.max(0, Math.round(demand)));
 
@@ -410,30 +412,24 @@ function onWeek(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
     ),
   );
 
-  if (state.marketingWeekly > 0) {
-    cash -= state.marketingWeekly;
+  const weeklyMarketing = totalWeeklyMarketing(leversOf(biz));
+  if (weeklyMarketing > 0) {
+    cash -= weeklyMarketing;
     ledgerEntries.push(
       ledger(
         `mkt-${biz.id}-${ctx.tick}`,
         ctx.tick,
-        -state.marketingWeekly,
+        -weeklyMarketing,
         "marketing",
         "Local / referral marketing",
         biz.id,
       ),
     );
-    state.marketingScore = Math.min(
-      1,
-      state.marketingScore * 0.6 +
-        Math.min(1, state.marketingWeekly / dollars(1_200)) * 0.4,
-    );
-  } else {
-    state.marketingScore *= 0.6;
   }
 
   const weeklyRevenue = state.weeklyCopayAcc + state.weeklyInsurancePaidAcc;
   const weeklyExpenses =
-    state.weeklyCogsAcc + state.wagesAccrued + weeklyRent + state.marketingWeekly;
+    state.weeklyCogsAcc + state.wagesAccrued + weeklyRent + weeklyMarketing;
   const pretax = weeklyRevenue - weeklyExpenses;
   const tax = corporateTax(pretax);
   if (tax > 0) {
@@ -452,10 +448,14 @@ function onWeek(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
   const weeklyProfit = pretax - tax;
 
   // CSAT target nudge.
+  const csatMarketingScore = effectiveMarketingScore(
+    leversOf(biz),
+    ctx.world.markets[biz.locationId],
+  );
   const target =
     50 +
     state.careQuality * 30 +
-    state.marketingScore * 10 -
+    csatMarketingScore * 10 -
     (1 - clinicianRatio(state)) * 20;
   const next =
     biz.kpis.customerSatisfaction +

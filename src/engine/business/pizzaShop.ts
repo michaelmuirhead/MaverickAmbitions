@@ -45,6 +45,11 @@ import {
   priceAttractiveness,
 } from "../economy/market";
 import { hospitalityHalo } from "../economy/reputation";
+import {
+  effectiveMarketingScore,
+  leversOf,
+  totalWeeklyMarketing,
+} from "./leverState";
 
 import type {
   BusinessStartupSpec,
@@ -84,10 +89,7 @@ export interface PizzaShopState {
   menu: Record<string, PizzaMenuItem>;
   staff: PizzaStaff[];
   locationQuality: number;
-  /** 0..1. */
-  marketingScore: number;
   rentMonthly: Cents;
-  marketingWeekly: Cents;
   /** Platform commission rake on delivery revenue (0.18 by default). */
   deliveryCommissionRate: number;
   /** Per-delivery flat fuel cost in cents. */
@@ -162,9 +164,7 @@ function createBusiness(params: {
       { id: `${params.id}-driver2`, name: "Driver Beta",   role: "driver",  hourlyWageCents: Math.round(ECONOMY.BASE_HOURLY_WAGE_CENTS * 0.95), skill: 45, morale: 65 },
     ],
     locationQuality: 0.55,
-    marketingScore: 0.25,
     rentMonthly: Math.round(ECONOMY.BASE_RENT_MONTHLY_CENTS * 1.2),
-    marketingWeekly: dollars(250),
     deliveryCommissionRate: 0.18,
     deliveryFuelCostPerOrder: dollars(1.5),
     avgDeliveryRoundTripMin: 28,
@@ -269,11 +269,13 @@ function onHour(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
   const service = avgService(state);
   const ownHalo = hospitalityHalo(ctx.world, biz.ownerId, biz.locationId);
 
+  // v0.10: derived marketing score from channelized levers.
+  const marketingScore = effectiveMarketingScore(leversOf(biz), market);
   // Dine-in demand scales with storefront foot traffic.
   const dineInVisitRate =
     ECONOMY.BASE_VISIT_RATE *
     1.4 *
-    (0.5 + state.marketingScore) *
+    (0.5 + marketingScore) *
     (0.6 + state.locationQuality) *
     (1 + ownHalo) /
     density;
@@ -286,7 +288,7 @@ function onHour(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
     market.population * 0.00018 * ctx.macro.consumerWallet * trafficMul;
   const deliveryDemand =
     deliveryDemandBase *
-    (0.5 + state.marketingScore) *
+    (0.5 + marketingScore) *
     (isEvening ? 1.6 : 0.7);
 
   // Throughput caps.
@@ -525,25 +527,20 @@ function onWeek(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
     ),
   );
 
-  if (state.marketingWeekly > 0) {
-    cash -= state.marketingWeekly;
+  // v0.10: channelized marketing — sum across 6 sliders.
+  const weeklyMarketing = totalWeeklyMarketing(leversOf(biz));
+  if (weeklyMarketing > 0) {
+    cash -= weeklyMarketing;
     ledgerEntries.push(
       ledger(
         `mkt-${biz.id}-${ctx.tick}`,
         ctx.tick,
-        -state.marketingWeekly,
+        -weeklyMarketing,
         "marketing",
         "Local flyers / social",
         biz.id,
       ),
     );
-    state.marketingScore = Math.min(
-      1,
-      state.marketingScore * 0.65 +
-        Math.min(1, state.marketingWeekly / dollars(500)) * 0.35,
-    );
-  } else {
-    state.marketingScore *= 0.65;
   }
 
   // Weekly KPIs.
@@ -554,7 +551,7 @@ function onWeek(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
     state.weeklyCogsAcc +
     state.wagesAccrued +
     weeklyRent +
-    state.marketingWeekly +
+    weeklyMarketing +
     state.weeklyDeliveryCommissionAcc +
     state.weeklyDeliveryFuelAcc;
   const pretax = weeklyRevenue - weeklyExpenses;
@@ -576,7 +573,11 @@ function onWeek(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
 
   // CSAT drift by service + price.
   const service = avgService(state);
-  const target = 55 + service * 30 + state.marketingScore * 5;
+  const csatMarketingScore = effectiveMarketingScore(
+    leversOf(biz),
+    ctx.world.markets[biz.locationId],
+  );
+  const target = 55 + service * 30 + csatMarketingScore * 5;
   const next =
     biz.kpis.customerSatisfaction +
     (Math.max(0, Math.min(90, target)) - biz.kpis.customerSatisfaction) * 0.2;

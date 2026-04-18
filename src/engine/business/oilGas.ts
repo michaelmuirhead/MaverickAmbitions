@@ -31,6 +31,8 @@ import { dollars } from "@/lib/money";
 import { ECONOMY } from "../economy/constants";
 import { corporateTax, ledger } from "../economy/finance";
 
+import { leversOf, totalWeeklyMarketing } from "./leverState";
+
 import type {
   BusinessStartupSpec,
   BusinessTickContext,
@@ -78,8 +80,6 @@ export interface OilGasState {
   liftingCostPerBblCents: Cents;
   /** Cap on simultaneous active wells. */
   wellCap: number;
-  marketingScore: number; // BD for leases/permits
-  marketingWeekly: Cents;
   rentMonthly: Cents;
 
   // accumulators
@@ -139,8 +139,6 @@ function createBusiness(params: {
     spotPricePerBblCents: dollars(72),
     liftingCostPerBblCents: dollars(18),
     wellCap: 6,
-    marketingScore: 0.3,
-    marketingWeekly: dollars(900),
     rentMonthly: Math.round(ECONOMY.BASE_RENT_MONTHLY_CENTS * 2.8),
 
     weeklyProductionBbl: 0,
@@ -393,25 +391,19 @@ function onWeek(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
     ),
   );
 
-  if (state.marketingWeekly > 0) {
-    cash -= state.marketingWeekly;
+  const weeklyMarketing = totalWeeklyMarketing(leversOf(biz));
+  if (weeklyMarketing > 0) {
+    cash -= weeklyMarketing;
     ledgerEntries.push(
       ledger(
         `mkt-${biz.id}-${ctx.tick}`,
         ctx.tick,
-        -state.marketingWeekly,
+        -weeklyMarketing,
         "marketing",
         "Lease / permits BD",
         biz.id,
       ),
     );
-    state.marketingScore = Math.min(
-      1,
-      state.marketingScore * 0.6 +
-        Math.min(1, state.marketingWeekly / dollars(1_500)) * 0.4,
-    );
-  } else {
-    state.marketingScore *= 0.6;
   }
 
   const weeklyRevenue = state.weeklyRevenueAcc;
@@ -420,7 +412,7 @@ function onWeek(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
     state.weeklyCapexAcc +
     state.wagesAccrued +
     weeklyRent +
-    state.marketingWeekly;
+    weeklyMarketing;
   const pretax = weeklyRevenue - weeklyExpenses;
   const tax = corporateTax(pretax);
   if (tax > 0) {

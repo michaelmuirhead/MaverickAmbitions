@@ -29,12 +29,17 @@ import type {
   Tick,
 } from "@/types/game";
 
-import { dollars } from "@/lib/money";
 import { createRng } from "@/lib/rng";
 import type { RNG } from "@/lib/rng";
 
 import { ECONOMY } from "../economy/constants";
 import { corporateTax, ledger } from "../economy/finance";
+
+import {
+  effectiveMarketingScore,
+  leversOf,
+  totalWeeklyMarketing,
+} from "./leverState";
 
 import type {
   BusinessStartupSpec,
@@ -90,9 +95,6 @@ export interface ProjectBusinessState {
 
   /** Brand prestige / reputation inside the business's industry. 0..1. */
   prestige: number;
-  /** 0..1 marketing / BD score (drives pipeline density). */
-  marketingScore: number;
-  marketingWeekly: Cents;
   rentMonthly: Cents;
 
   // accumulators
@@ -119,8 +121,6 @@ export interface ProjectModuleConfig {
   startingCash: Cents;
   /** Monthly rent factor — multiplied by ECONOMY.BASE_RENT_MONTHLY_CENTS. */
   rentMultiplier: number;
-  /** Default weekly marketing / BD spend. */
-  marketingWeekly: Cents;
   /** Initial staff roster. */
   initialStaff(bizId: Id): ProjectStaff[];
 
@@ -169,8 +169,6 @@ export function makeProjectModule(
       failedProjectCount: 0,
       staff: config.initialStaff(params.id),
       prestige: 0.25,
-      marketingScore: 0.3,
-      marketingWeekly: config.marketingWeekly,
       rentMonthly: Math.round(
         ECONOMY.BASE_RENT_MONTHLY_CENTS * config.rentMultiplier,
       ),
@@ -454,26 +452,24 @@ export function makeProjectModule(
       ),
     );
 
-    // Marketing / BD.
-    if (state.marketingWeekly > 0) {
-      cash -= state.marketingWeekly;
+    // Marketing / BD — channelized spend.
+    const weeklyMarketing = totalWeeklyMarketing(leversOf(biz));
+    const marketingScore = effectiveMarketingScore(
+      leversOf(biz),
+      ctx.world.markets[biz.locationId],
+    );
+    if (weeklyMarketing > 0) {
+      cash -= weeklyMarketing;
       ledgerEntries.push(
         ledger(
           `mkt-${biz.id}-${ctx.tick}`,
           ctx.tick,
-          -state.marketingWeekly,
+          -weeklyMarketing,
           "marketing",
           "BD / marketing",
           biz.id,
         ),
       );
-      state.marketingScore = Math.min(
-        1,
-        state.marketingScore * 0.6 +
-          Math.min(1, state.marketingWeekly / dollars(1_800)) * 0.4,
-      );
-    } else {
-      state.marketingScore *= 0.6;
     }
 
     // Residuals — iterate completed projects with remaining residual weeks.
@@ -509,7 +505,7 @@ export function makeProjectModule(
       0.95,
       config.baseWeeklyPipelineChance *
         (0.6 + state.prestige * 1.2) *
-        (0.6 + state.marketingScore * 0.9),
+        (0.6 + marketingScore * 0.9),
     );
     const activeCount = state.projects.filter((p) => p.status === "active").length;
     if (
@@ -544,7 +540,7 @@ export function makeProjectModule(
       state.weeklyCogsAcc +
       state.wagesAccrued +
       weeklyRent +
-      state.marketingWeekly;
+      weeklyMarketing;
     const pretax = weeklyRevenue - weeklyExpenses;
     const tax = corporateTax(pretax);
     if (tax > 0) {
@@ -566,7 +562,7 @@ export function makeProjectModule(
     const target =
       50 +
       state.prestige * 30 +
-      state.marketingScore * 10 -
+      marketingScore * 10 -
       state.failedProjectCount * 2;
     const next =
       biz.kpis.customerSatisfaction +

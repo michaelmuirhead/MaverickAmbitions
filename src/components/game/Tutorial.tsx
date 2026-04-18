@@ -13,7 +13,7 @@ import { Button } from "@/components/ui/Button";
  */
 
 // Storage key is versioned so tutorial-content changes can force a replay.
-const STORAGE_KEY = "ma:tutorial:v0.8.0";
+const STORAGE_KEY = "ma:tutorial:v0.8.1";
 
 export interface TutorialStep {
   title: string;

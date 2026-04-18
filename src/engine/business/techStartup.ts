@@ -57,7 +57,6 @@ const config: ProjectModuleConfig = {
 
   startingCash: dollars(45_000),
   rentMultiplier: 1.2, // WeWork-style coworking
-  marketingWeekly: dollars(1_200),
 
   initialStaff: (bizId) =>
     buildStaff(bizId, [

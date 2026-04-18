@@ -16,6 +16,8 @@ import { generatePropertiesForMarket } from "./economy/realEstate";
 import { createFounder } from "./player/character";
 
 export { stepTick } from "./tick";
+export { advanceUntil } from "./advance";
+export type { AdvanceTarget, AdvanceStop, AdvanceResult } from "./advance";
 export { saveGame, loadGame, listSaves, deleteSave, AUTOSAVE_SLOT } from "./save/saveGame";
 export { getBusinessModule, getAvailableBusinessTypes } from "./business/registry";
 
@@ -68,7 +70,7 @@ export function newGame(opts: NewGameOptions = {}): GameState {
   }
 
   return {
-    version: 6,
+    version: 7,
     seed,
     clock: { tick: 0, lastStepAt: Date.now(), speed: 1 },
     macro,
@@ -90,6 +92,10 @@ export function newGame(opts: NewGameOptions = {}): GameState {
       cumulativeNetWorth: 0,
       philanthropy: 0,
       influence: 0,
+    },
+    // v0.9 — default fast-forward pause behavior.
+    settings: {
+      pauseOnEvent: "blocking",
     },
   };
 }

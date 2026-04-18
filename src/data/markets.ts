@@ -38,9 +38,15 @@ import type { Market } from "@/types/game";
 
 import { dollars } from "@/lib/money";
 
+import { MARKET_DEMOGRAPHICS } from "./marketDemographics";
 import { LAUNCH_REGION_ID } from "./regions";
 
-export const STARTER_MARKETS: Record<string, Market> = {
+/**
+ * Hand-authored market roster. See `marketDemographics.ts` for the
+ * demographic overlay that is merged onto each market at module load time
+ * (the export below, `STARTER_MARKETS`, is the merged result).
+ */
+const STARTER_MARKETS_BASE: Record<string, Market> = {
   // ---------- Central city (original v0.1 markets) ----------
 
   m_downtown: {
@@ -646,3 +652,15 @@ export const STARTER_MARKETS: Record<string, Market> = {
     businessIds: [],
   },
 };
+
+/**
+ * Final exported roster — `STARTER_MARKETS_BASE` merged with the
+ * demographic overlay from `marketDemographics.ts`. Callers read
+ * `market.demographics` directly; no additional lookup is needed.
+ */
+export const STARTER_MARKETS: Record<string, Market> = Object.fromEntries(
+  Object.entries(STARTER_MARKETS_BASE).map(([id, market]) => [
+    id,
+    { ...market, demographics: MARKET_DEMOGRAPHICS[id] },
+  ]),
+);

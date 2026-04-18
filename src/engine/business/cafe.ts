@@ -43,6 +43,11 @@ import {
 } from "../economy/market";
 import { hospitalityHalo } from "../economy/reputation";
 import { CAFE_MENU, type MenuItemId } from "@/data/menu";
+import {
+  effectiveMarketingScore,
+  leversOf,
+  totalWeeklyMarketing,
+} from "./leverState";
 
 import type {
   BusinessStartupSpec,
@@ -67,10 +72,7 @@ export interface CafeState {
   ambience: number;
   /** Tick at which ambience was last refreshed. */
   lastAmbienceRefreshTick: Tick;
-  /** 0..1, effect of marketing. */
-  marketingScore: number;
   rentMonthly: Cents;
-  marketingWeekly: Cents;
 
   /** Weekly accumulators (reset on week close). */
   weeklyRevenueAcc: Cents;
@@ -195,9 +197,7 @@ function createBusiness(params: {
     locationQuality: 0.6,
     ambience: 0.75,
     lastAmbienceRefreshTick: params.tick,
-    marketingScore: 0.25,
     rentMonthly: Math.round(ECONOMY.BASE_RENT_MONTHLY_CENTS * 1.4), // cafes sit on nicer streets
-    marketingWeekly: dollars(200),
 
     weeklyRevenueAcc: 0,
     weeklyCogsAcc: 0,
@@ -314,10 +314,12 @@ function onHour(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
   const csatBoost = Math.max(0.7, (biz.kpis.customerSatisfaction / 70));
   const ambienceBoost = 0.7 + state.ambience * 0.5;
 
+  // v0.10: marketing is now channelized per-lever, weighted by demographics.
+  const marketingScore = effectiveMarketingScore(leversOf(biz), market);
   const visitRate =
     ECONOMY.BASE_VISIT_RATE *
     1.3 * // cafes have higher intent than corner stores
-    (0.5 + state.marketingScore) *
+    (0.5 + marketingScore) *
     (0.6 + state.locationQuality) *
     csatBoost *
     (1 + ownHalo) *
@@ -502,12 +504,17 @@ function onDay(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
     ) / Math.max(1, Object.keys(state.menu).length);
   const priceFairness = priceAttractiveness(avgPriceRatio); // 0.25..1.5
 
+  // v0.10: marketing's CSAT contribution is derived from lever state.
+  const csatMarketingScore = effectiveMarketingScore(
+    leversOf(biz),
+    ctx.world.markets[biz.locationId],
+  );
   const target =
     50 +
     service * 35 + // service quality is most of the signal
     (state.ambience - 0.5) * 20 +
     (priceFairness - 1) * 10 +
-    (state.marketingScore - 0.3) * 5 -
+    (csatMarketingScore - 0.3) * 5 -
     wasteFactor * 4 -
     state.complaintsThisWeek * 1.2;
 
@@ -585,26 +592,21 @@ function onWeek(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
     ),
   );
 
-  // Marketing.
-  if (state.marketingWeekly > 0) {
-    cash -= state.marketingWeekly;
+  // v0.10: marketing spend is the sum of all 6 channel sliders. Channel
+  // score decay + lift are handled centrally by tickLevers() each hour.
+  const weeklyMarketing = totalWeeklyMarketing(leversOf(biz));
+  if (weeklyMarketing > 0) {
+    cash -= weeklyMarketing;
     ledgerEntries.push(
       ledger(
         `mkt-${biz.id}-${ctx.tick}`,
         ctx.tick,
-        -state.marketingWeekly,
+        -weeklyMarketing,
         "marketing",
         "Weekly marketing",
         biz.id,
       ),
     );
-    state.marketingScore = Math.min(
-      1,
-      state.marketingScore * 0.65 +
-        Math.min(1, state.marketingWeekly / dollars(500)) * 0.35,
-    );
-  } else {
-    state.marketingScore *= 0.65;
   }
 
   // Ambience decays more visibly weekly.
@@ -616,7 +618,7 @@ function onWeek(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
   // Weekly KPIs.
   const weeklyRevenue = state.weeklyRevenueAcc;
   const weeklyExpenses =
-    state.weeklyCogsAcc + state.wagesAccrued + weeklyRent + state.marketingWeekly;
+    state.weeklyCogsAcc + state.wagesAccrued + weeklyRent + weeklyMarketing;
   const pretax = weeklyRevenue - weeklyExpenses;
   const tax = corporateTax(pretax);
   if (tax > 0) {

@@ -42,6 +42,11 @@ import { corporateTax, ledger } from "../economy/finance";
 import { getPulseBundle } from "../macro/events";
 import { competitiveDensity, marketFootTraffic } from "../economy/market";
 import { hospitalityHalo } from "../economy/reputation";
+import {
+  effectiveMarketingScore,
+  leversOf,
+  totalWeeklyMarketing,
+} from "./leverState";
 
 import type {
   BusinessStartupSpec,
@@ -89,8 +94,6 @@ export interface NightclubState {
   coverChargeCents: Cents;
   /** 0..1 perceived venue quality (sound, lights, celebrity DJs, etc.). */
   venueTier: number;
-  /** 0..1 marketing / social presence. */
-  marketingScore: number;
   /** 0..1 last-measured capacity utilization. */
   capacityFill: number;
   /** Total capacity. A bigger venue scales every channel linearly up to cap. */
@@ -107,7 +110,6 @@ export interface NightclubState {
   licenseSuspendedUntilTick: Tick;
 
   rentMonthly: Cents;
-  marketingWeekly: Cents;
   staff: ClubStaff[];
 
   weeklyCoverAcc: Cents;
@@ -152,7 +154,6 @@ function createBusiness(params: {
     theme: "mixed",
     coverChargeCents: dollars(15),
     venueTier: 0.6,
-    marketingScore: 0.3,
     capacityFill: 0,
     capacity: 200,
     vipTables: 6,
@@ -161,7 +162,6 @@ function createBusiness(params: {
     noiseComplaintsThisWeek: 0,
     licenseSuspendedUntilTick: 0,
     rentMonthly: Math.round(ECONOMY.BASE_RENT_MONTHLY_CENTS * 3), // warehouse space
-    marketingWeekly: dollars(600),
     staff: [
       { id: `${params.id}-bouncer-1`,    name: "Bouncer Alpha",    role: "bouncer",    hourlyWageCents: Math.round(ECONOMY.BASE_HOURLY_WAGE_CENTS * 1.3), skill: 60, morale: 72 },
       { id: `${params.id}-bouncer-2`,    name: "Bouncer Beta",     role: "bouncer",    hourlyWageCents: Math.round(ECONOMY.BASE_HOURLY_WAGE_CENTS * 1.3), skill: 55, morale: 70 },
@@ -276,8 +276,9 @@ function onHour(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
   const density = competitiveDensity(competitorClubs(ctx.world, biz));
   const rawMarketDemand =
     marketFootTraffic(market, ctx.macro, 12 + (ctx.tick % 24)) * 0.6; // abuse daytime traffic metric as population proxy
+  const marketingScore = effectiveMarketingScore(leversOf(biz), market);
   const demandMul =
-    (0.5 + state.marketingScore) *
+    (0.5 + marketingScore) *
     (0.6 + state.venueTier * 0.5) *
     (0.8 + service * 0.4) *
     (1 + halo) *
@@ -308,7 +309,7 @@ function onHour(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
   const vipFillBase = peak ? 0.65 : 0.2;
   const vipFill = Math.min(
     1,
-    vipFillBase * (0.6 + state.venueTier) * (0.6 + state.marketingScore) * demandMul,
+    vipFillBase * (0.6 + state.venueTier) * (0.6 + marketingScore) * demandMul,
   );
   const bookedTables = Math.round(state.vipTables * vipFill);
   const vipRevenue = bookedTables * state.vipTablePrice;
@@ -477,25 +478,21 @@ function onWeek(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
     ),
   );
 
-  if (state.marketingWeekly > 0) {
-    cash -= state.marketingWeekly;
+  // v0.10: channelized marketing — promoter/social blend is expressed as
+  // sliders on the 6-channel panel; score decay + lift live in tickLevers().
+  const weeklyMarketing = totalWeeklyMarketing(leversOf(biz));
+  if (weeklyMarketing > 0) {
+    cash -= weeklyMarketing;
     ledgerEntries.push(
       ledger(
         `mkt-${biz.id}-${ctx.tick}`,
         ctx.tick,
-        -state.marketingWeekly,
+        -weeklyMarketing,
         "marketing",
         "Promoters / socials",
         biz.id,
       ),
     );
-    state.marketingScore = Math.min(
-      1,
-      state.marketingScore * 0.55 +
-        Math.min(1, state.marketingWeekly / dollars(1_200)) * 0.45,
-    );
-  } else {
-    state.marketingScore *= 0.55;
   }
 
   // Liquor license fee — pulsed by macro event.
@@ -521,7 +518,7 @@ function onWeek(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
     state.weeklyCogsAcc +
     state.wagesAccrued +
     weeklyRent +
-    state.marketingWeekly +
+    weeklyMarketing +
     licenseWeekly;
   const pretax = weeklyRevenue - weeklyExpenses;
   const tax = corporateTax(pretax);
@@ -542,10 +539,14 @@ function onWeek(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
 
   // CSAT nudges: VIP fill and venue tier move it up; complaints move it down.
   const complaintDrag = state.noiseComplaintsThisWeek * 3;
+  const csatMarketingScore = effectiveMarketingScore(
+    leversOf(biz),
+    ctx.world.markets[biz.locationId],
+  );
   const target =
     55 +
     state.venueTier * 25 +
-    state.marketingScore * 10 +
+    csatMarketingScore * 10 +
     (state.weeklyVipAcc > dollars(5000) ? 5 : 0) -
     complaintDrag;
   const next =

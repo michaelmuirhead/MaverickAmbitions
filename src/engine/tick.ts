@@ -31,6 +31,9 @@ import {
 import { createRng } from "@/lib/rng";
 
 import { getBusinessModule } from "./business/registry";
+import { checkInsolvencyWeekly } from "./business/insolvency";
+import { defaultLeversForBusinessType, tickLevers } from "./business/leverState";
+import { liquidateBusiness } from "./business/liquidation";
 import { advanceMacro } from "./economy/cycles";
 import { ECONOMY } from "./economy/constants";
 import { resetYearlyMissedPayments, runMonthlySettlement } from "./economy/realEstate";
@@ -45,6 +48,10 @@ import {
   rollWeeklyMacroEvent,
 } from "./macro/events";
 import { onHourPlayer } from "./player/character";
+import {
+  filePersonalBankruptcy,
+  shouldFilePersonalBankruptcy,
+} from "./player/bankruptcy";
 import { stepRivalWeekly } from "./ai/rival";
 
 /** Approximated in-game month (30 days × 24 hours). */
@@ -96,8 +103,15 @@ export function stepTick(state: GameState): GameState {
   for (const biz of Object.values(state.businesses)) {
     const mod = tryGetModule(biz.type);
     if (!mod) continue;
+    // v0.10: Advance the shared lever state once per tick BEFORE the module
+    // runs, so every per-type onHour sees fresh channel scores, signage
+    // decay, and an up-to-date promo window when it reads `biz.levers`.
+    const bizWithLevers: Business = {
+      ...biz,
+      levers: tickLevers(biz.levers ?? defaultLeversForBusinessType(biz.type), tick),
+    };
     const { business: updated, ledger: addLedger, events: addEvents } = mod.onHour(
-      biz,
+      bizWithLevers,
       {
         tick,
         macro,
@@ -110,8 +124,11 @@ export function stepTick(state: GameState): GameState {
     events = appendBusinessEvents(events, addEvents, tick, biz.id);
   }
 
-  // 3. Player hourly drift.
-  const player = onHourPlayer(state.player, rootRng.child("player-hour"), tick);
+  // 3. Player hourly drift. Note: `let` (not `const`) because a forced
+  // liquidation on a weekly tick can replace the player record (cash
+  // top-up from proceeds, credit ding, closedBusinesses entry) before
+  // we hand off to monthly settlement further down.
+  let player = onHourPlayer(state.player, rootRng.child("player-hour"), tick);
 
   // 4. Daily & weekly roll-ups based on clock boundaries.
   const date = tickToDate(tick);
@@ -174,6 +191,98 @@ export function stepTick(state: GameState): GameState {
       businesses[biz.id] = updated;
       ledger = appendLedger(ledger, addLedger);
       events = appendBusinessEvents(events, addEvents, tick, biz.id);
+    }
+
+    // 5a. Insolvency state machine (v0.9). Runs only on player-owned
+    // businesses and only after weekly roll-ups have settled. Transitions
+    // status operating → distressed → insolvent; once a business crosses
+    // the 4-week distress threshold we hand its id off to the liquidation
+    // pipeline (#48 will consume `newlyInsolventIds` here).
+    const insolv = checkInsolvencyWeekly(
+      {
+        ...state,
+        clock: { ...state.clock, tick },
+        macro,
+        businesses,
+        player,
+      },
+      tick,
+    );
+    businesses = insolv.businesses;
+    events = appendGameEvents(events, insolv.events);
+    for (const e of insolv.events) emitGameEvent(e);
+
+    // 5a-ii. Forced liquidation (#48). For each business that just
+    // transitioned to `insolvent`, run the liquidation pipeline:
+    // recover 40% of book as cash proceeds, collapse any outstanding
+    // business-loan balance to personal unsecured debt, ding credit
+    // 80 points, remove the record and store a postmortem. Each pass
+    // builds on the snapshot produced by the previous one so multi-
+    // business liquidations in a single week compose cleanly.
+    if (insolv.newlyInsolventIds.length > 0) {
+      let liqState: GameState = {
+        ...state,
+        clock: { ...state.clock, tick },
+        macro,
+        businesses,
+        rivals: rivalsState,
+        properties,
+        mortgages,
+        businessLoans,
+        ledger,
+        events,
+        player,
+        activeEvents,
+        eventHistory,
+      };
+      for (const bizId of insolv.newlyInsolventIds) {
+        const res = liquidateBusiness(liqState, bizId, tick);
+        if (!res.ok) continue; // defensive — missing module or non-owned
+        liqState = res.state;
+        emitGameEvent(res.event);
+      }
+      businesses = liqState.businesses;
+      properties = liqState.properties;
+      businessLoans = liqState.businessLoans;
+      ledger = liqState.ledger;
+      events = liqState.events;
+      // Markets + player are also updated by liquidation; fold them back
+      // into the final state snapshot at the end of this tick.
+      state = { ...state, markets: liqState.markets, player: liqState.player };
+      player = liqState.player;
+    }
+
+    // 5a-iii. Personal bankruptcy trigger (#49). After the liquidation
+    // cascade, the player may now hold enough unsecured debt that even
+    // their remaining assets can't service it. If so, file Chapter 7:
+    // foreclose real estate at 90%, discharge unsecured debt, credit
+    // drops to 300, 7-year lockout flag. Setting `alive = false` here
+    // hands off to the existing end-of-tick succession flow — eligible
+    // heir inherits surviving businesses with a clean balance sheet, or
+    // the game enters its terminal state if no heir is available.
+    const bkSnapshot: GameState = {
+      ...state,
+      clock: { ...state.clock, tick },
+      macro,
+      businesses,
+      rivals: rivalsState,
+      properties,
+      mortgages,
+      businessLoans,
+      ledger,
+      events,
+      player,
+      activeEvents,
+      eventHistory,
+    };
+    if (shouldFilePersonalBankruptcy(bkSnapshot)) {
+      const bk = filePersonalBankruptcy(bkSnapshot, tick);
+      properties = bk.state.properties;
+      mortgages = bk.state.mortgages;
+      player = bk.state.player;
+      ledger = bk.state.ledger;
+      events = bk.state.events;
+      emitGameEvent(bk.event);
     }
 
     // Weekly macro event roll — possibly schedule a new shock. We do this

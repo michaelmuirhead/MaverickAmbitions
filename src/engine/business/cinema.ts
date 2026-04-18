@@ -43,6 +43,12 @@ import { corporateTax, ledger } from "../economy/finance";
 import { getPulseBundle } from "../macro/events";
 import { marketFootTraffic } from "../economy/market";
 
+import {
+  effectiveMarketingScore,
+  leversOf,
+  totalWeeklyMarketing,
+} from "./leverState";
+
 import type {
   BusinessStartupSpec,
   BusinessTickContext,
@@ -111,9 +117,6 @@ export interface CinemaState {
   concessionAttachRate: number;
   /** 0..1 ambient streaming-service demand drag. */
   streamingPressure: number;
-  /** 0..1 marketing score. */
-  marketingScore: number;
-  marketingWeekly: Cents;
   rentMonthly: Cents;
   staff: CinemaStaff[];
 
@@ -248,8 +251,6 @@ function createBusiness(params: {
     concessionAvgSpend: dollars(12),
     concessionAttachRate: 0.65,
     streamingPressure: 0.3,
-    marketingScore: 0.3,
-    marketingWeekly: dollars(800),
     rentMonthly: Math.round(ECONOMY.BASE_RENT_MONTHLY_CENTS * 4), // multiplex footprint
     staff: [
       { id: `${params.id}-mgr`,  name: "General Manager",  role: "manager",      hourlyWageCents: Math.round(ECONOMY.BASE_HOURLY_WAGE_CENTS * 1.5), skill: 60, morale: 72 },
@@ -340,6 +341,7 @@ function onHour(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
   const dowMul = DOW_MULTIPLIER[dayOfWeek(ctx.tick)] ?? 1;
   const seasonMul = CINEMA_SEASONALITY[monthOf(ctx.tick)] ?? 1;
   const service = avgService(state);
+  const marketingScore = effectiveMarketingScore(leversOf(biz), market);
 
   const rawTraffic = marketFootTraffic(market, ctx.macro, ctx.tick);
   const streamingDrag = 1 - state.streamingPressure;
@@ -368,7 +370,7 @@ function onHour(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
           seasonMul *
           ageMul *
           (0.55 + quality * 0.5) *
-          (0.7 + state.marketingScore * 0.5) *
+          (0.7 + marketingScore * 0.5) *
           (0.75 + service * 0.35) *
           streamingDrag *
           premiumHalo *
@@ -561,26 +563,20 @@ function onWeek(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
     ),
   );
 
-  // Marketing.
-  if (state.marketingWeekly > 0) {
-    cash -= state.marketingWeekly;
+  // Marketing — channelized spend.
+  const weeklyMarketing = totalWeeklyMarketing(leversOf(biz));
+  if (weeklyMarketing > 0) {
+    cash -= weeklyMarketing;
     ledgerEntries.push(
       ledger(
         `mkt-${biz.id}-${ctx.tick}`,
         ctx.tick,
-        -state.marketingWeekly,
+        -weeklyMarketing,
         "marketing",
         "Marketing",
         biz.id,
       ),
     );
-    state.marketingScore = Math.min(
-      1,
-      state.marketingScore * 0.6 +
-        Math.min(1, state.marketingWeekly / dollars(1_500)) * 0.4,
-    );
-  } else {
-    state.marketingScore *= 0.6;
   }
 
   const weeklyRevenue = state.weeklyBoxOfficeAcc + state.weeklyConcessionsAcc;
@@ -589,7 +585,7 @@ function onWeek(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
     state.weeklyCogsAcc +
     state.wagesAccrued +
     weeklyRent +
-    state.marketingWeekly;
+    weeklyMarketing;
   const pretax = weeklyRevenue - weeklyExpenses;
   const tax = corporateTax(pretax);
   if (tax > 0) {
@@ -610,9 +606,13 @@ function onWeek(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
   // CSAT nudge.
   const concessionShare =
     weeklyRevenue > 0 ? state.weeklyConcessionsAcc / weeklyRevenue : 0;
+  const csatMarketingScore = effectiveMarketingScore(
+    leversOf(biz),
+    ctx.world.markets[biz.locationId],
+  );
   const target =
     55 +
-    state.marketingScore * 10 +
+    csatMarketingScore * 10 +
     (concessionShare > 0.35 ? 6 : 0) +
     (state.streamingPressure > 0.45 ? -6 : 0);
   const next =
