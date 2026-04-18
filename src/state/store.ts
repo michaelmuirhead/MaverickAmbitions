@@ -51,7 +51,12 @@ import { selectNetWorth } from "./selectors";
 
 interface GameActions {
   /** Start a brand-new game. */
-  startNew: (opts?: { founderName?: string; difficulty?: 1 | 2 | 3 | 4 | 5 }) => void;
+  startNew: (opts?: {
+    founderName?: string;
+    difficulty?: 1 | 2 | 3 | 4 | 5;
+    /** Override founder's starting personal cash, in cents. Defaults to $15,000. */
+    startingCashCents?: number;
+  }) => void;
   /** Hydrate from a save slot. Returns true on success. */
   loadSlot: (slot?: string) => boolean;
   /** Autosave to the current slot. */
@@ -195,7 +200,11 @@ export const useGameStore = create<GameStore>()(
     tickIntervalMs: 2000,
 
     startNew: (opts) => {
-      const g = newGame({ founderName: opts?.founderName, difficulty: opts?.difficulty });
+      const g = newGame({
+        founderName: opts?.founderName,
+        difficulty: opts?.difficulty,
+        startingCashCents: opts?.startingCashCents,
+      });
       set((s) => {
         s.game = g;
         s.tickIntervalMs = speedToIntervalMs(g.clock.speed);
