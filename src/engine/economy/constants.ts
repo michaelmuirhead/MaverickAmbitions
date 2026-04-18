@@ -30,8 +30,14 @@ export const ECONOMY = {
   BASE_CONVERSION: 0.45,
 
   // --- Rent ---
-  /** Baseline monthly rent for a small retail lease (in cents). */
-  BASE_RENT_MONTHLY_CENTS: 350000, // $3,500
+  /**
+   * Baseline monthly rent for a small retail lease (in cents).
+   * v0.10.1: dropped from $3,500 → $2,800/mo ($875 → $700/wk). A
+   * $3,500 monthly nut on a starter corner store ate ~40% of weekly
+   * revenue even in strong markets; $2,800 still stings but leaves
+   * daylight for a good-run store to clear profit by week 2.
+   */
+  BASE_RENT_MONTHLY_CENTS: 280000, // $2,800
 
   // --- Labor ---
   /** Baseline hourly wage for a retail clerk (in cents). */

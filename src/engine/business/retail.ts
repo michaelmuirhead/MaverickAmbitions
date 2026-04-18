@@ -25,6 +25,7 @@ import { corporateTax, ledger } from "../economy/finance";
 import { getPulseBundle } from "../macro/events";
 import {
   competitiveDensity,
+  marketBasketMultiplier,
   marketFootTraffic,
   priceAttractiveness,
 } from "../economy/market";
@@ -295,10 +296,11 @@ function onHour(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
     const conversion = ECONOMY.BASE_CONVERSION * priceMod * (0.6 + avgService);
 
     // Expected buyers for this SKU in this hour. v0.10.1 balance pass:
-    // bumped per-SKU scale from 0.05 → 0.18 so traffic / visitRate /
+    // bumped per-SKU scale from 0.05 → 0.22 so traffic / visitRate /
     // desirability translate into visible revenue swings, and so a
-    // well-run starter store can clear its nut by ~week 2.
-    const expected = traffic * visitRate * conversion * 0.18;
+    // well-run starter store in any reasonable market (≥50% desirability)
+    // can clear its nut by week 1–2, not just the single highest-end one.
+    const expected = traffic * visitRate * conversion * 0.22;
     // v0.10.1 balance pass: switched noise model from additive `expected
     // + rng(-1, 1)` to a Poisson-like `floor(expected) + Bernoulli(frac)`.
     // With the additive model, the ±1 term dominated whenever expected
@@ -313,7 +315,11 @@ function onHour(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
 
     if (unitsSold > 0) {
       sku.stock -= unitsSold;
-      const rev = effectivePrice * unitsSold;
+      // v0.10.1 second-pass: wealthy neighborhoods buy bigger baskets
+      // per visit. Applied to revenue (not COGS) — the customer's buying
+      // more items at retail, not changing what each item costs us.
+      const basket = marketBasketMultiplier(market);
+      const rev = Math.round(effectivePrice * unitsSold * basket);
       const cogs = Math.round(sku.cost * unitsSold * pulse.cogsMultiplier);
       hourRevenue += rev;
       hourCogs += cogs;

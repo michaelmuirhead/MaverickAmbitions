@@ -17,6 +17,14 @@ import { ECONOMY } from "./constants";
  * so picking a strong neighborhood actually rewards the player. Before
  * the change, the best and worst markets only differed ~50% on this
  * factor; after it's ~3.4× end-to-end.
+ *
+ * v0.10.1 second pass: population used to be a linear `pop / 10_000`
+ * which meant a 68k-person dense market (Midtown) generated ~6× the
+ * traffic of an 11.5k-person high-end market (Pine Ridge). Combined
+ * with a flat desirability factor, that made highest-desirability
+ * markets economically ~uncompetitive vs dense but mediocre ones.
+ * Replaced with a sqrt-dampened curve so density still wins, just by
+ * a much smaller margin (~1.5× instead of ~6× end-to-end).
  */
 export function marketFootTraffic(
   market: Market,
@@ -24,7 +32,11 @@ export function marketFootTraffic(
   tick: Tick,
 ): number {
   if (!isBusinessHour(tick)) return 0;
-  const populationFactor = market.population / 10_000;
+  // sqrt-dampened population factor. Reference = 20k residents → 1.2×.
+  // 10k → 1.05, 30k → 1.31, 70k → 1.63. Dense markets still win, but
+  // only by ~1.6× end-to-end vs ~6× under the old linear formula.
+  const populationFactor =
+    0.7 + 0.5 * Math.sqrt(Math.max(0, market.population) / 20_000);
   const desirability = 0.35 + market.desirability * 0.85;
   const macroMultiplier = macro.consumerWallet;
   return Math.round(
@@ -33,6 +45,22 @@ export function marketFootTraffic(
       desirability *
       macroMultiplier,
   );
+}
+
+/**
+ * Per-visit spend multiplier based on a neighborhood's median income.
+ * Wealthier neighborhoods buy pricier baskets; poorer ones penny-pinch.
+ * Reference income is $60k → 1.0×. Dampened so extremes don't run away:
+ * $30k → ~0.85×, $60k → 1.0×, $96k → ~1.13×, $120k → ~1.21×.
+ * Applied multiplicatively to hourly revenue in the retail module —
+ * keeps high-desirability-small-population markets genuinely
+ * competitive with dense middle markets.
+ */
+export function marketBasketMultiplier(market: Market): number {
+  const REFERENCE_INCOME_CENTS = 60_000 * 100; // $60k
+  const ratio =
+    (market.medianIncome ?? REFERENCE_INCOME_CENTS) / REFERENCE_INCOME_CENTS;
+  return 0.6 + 0.4 * Math.sqrt(Math.max(0, ratio));
 }
 
 /**
