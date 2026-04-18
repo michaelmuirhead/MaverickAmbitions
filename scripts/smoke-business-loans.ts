@@ -161,18 +161,24 @@ const bLoanLedgers = g.ledger.filter(
 console.log(`  Business-loan ledger entries: ${bLoanLedgers.length}`);
 assert(bLoanLedgers.length >= 2, "Interest + principal entries recorded");
 
-// 5. Step 12 more months.
-for (let i = 0; i < HPM * 12; i++) g = stepTick(g);
-const afterYear = g.businessLoans[loan.id]!;
-console.log(`\n[5] After 13 in-game months (tick ${g.clock.tick})`);
+// 5. Step 2 more months (total 3). v0.9 adds insolvency-forced
+//    liquidation; pushing a 13-month horizon here reliably crosses the
+//    4-week distress threshold and closes the business, removing the
+//    loan record. A dedicated `smoke:bankruptcy` run (task #59) covers
+//    that path. This test stays focused on amortization over a window
+//    short enough for the store to stay solvent.
+for (let i = 0; i < HPM * 2; i++) g = stepTick(g);
+const afterYear = g.businessLoans[loan.id];
+assert(!!afterYear, "Loan still present (business has not liquidated)");
+console.log(`\n[5] After 3 in-game months (tick ${g.clock.tick})`);
 console.log(
-  `  Loan balance ${fmt$(afterYear.balance)} (${Math.round(((loan.principal - afterYear.balance) / loan.principal) * 100)}% paid)`,
+  `  Loan balance ${fmt$(afterYear!.balance)} (${Math.round(((loan.principal - afterYear!.balance) / loan.principal) * 100)}% paid)`,
 );
 console.log(
   `  Biz cash ${fmt$(g.businesses[biz.id]?.cash ?? 0)} · player cash ${fmt$(g.player.personalCash)} · credit ${g.player.creditScore}`,
 );
 assert(
-  afterYear.balance < afterMonth.balance,
+  afterYear!.balance < afterMonth.balance,
   "Balance continues to amortize",
 );
 
