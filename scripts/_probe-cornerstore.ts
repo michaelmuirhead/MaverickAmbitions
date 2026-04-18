@@ -68,14 +68,19 @@ function $ (cents: number): string {
   return `${sign}$${abs.toLocaleString("en-US", { maximumFractionDigits: 0 })}`;
 }
 
-function runSim(label: string, sortBy: "desirability" | "desc") {
+function runSim(label: string, pick: "best" | "median" | "worst") {
   let g = newGame({ seed: "balance-probe-" + label, founderName: "Tester", difficulty: 3 });
   g = { ...g, player: { ...g.player, personalCash: 200_000_00 } };
 
-  const markets = Object.values(g.markets).sort(
-    (a, b) => (sortBy === "desirability" ? b.desirability - a.desirability : a.desirability - b.desirability),
+  const sorted = Object.values(g.markets).sort(
+    (a, b) => b.desirability - a.desirability,
   );
-  const target = markets[0]!;
+  const target =
+    pick === "best"
+      ? sorted[0]!
+      : pick === "worst"
+        ? sorted[sorted.length - 1]!
+        : sorted[Math.floor(sorted.length / 2)]!;
   console.log(`\n=== ${label}: ${target.name} (desirability ${(target.desirability * 100).toFixed(0)}%) ===`);
 
   g = openStore(g, target.id, `Probe Store ${label}`);
@@ -108,5 +113,6 @@ function runSim(label: string, sortBy: "desirability" | "desc") {
   }
 }
 
-runSim("richest market", "desirability");
-runSim("poorest market", "desc");
+runSim("best market", "best");
+runSim("median market", "median");
+runSim("worst market", "worst");
