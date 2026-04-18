@@ -46,11 +46,14 @@ import {
 } from "../economy/market";
 import { hospitalityHalo } from "../economy/reputation";
 import {
+  currentPromoPctOff,
   effectiveMarketingScore,
   hourlyWageMultiplier,
   hoursCsatBonus,
   isBusinessOpenNow,
   leversOf,
+  promotionCsatDelta,
+  promotionTrafficLift,
   totalWeeklyMarketing,
 } from "./leverState";
 
@@ -267,7 +270,12 @@ function onHour(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
   // Pizza leans hospitality for trend pulses (cafe/bar/restaurant).
   const trafficMul = pulse.trafficMultiplierByType.restaurant ?? 1;
 
-  const baseTraffic = marketFootTraffic(market, ctx.macro, ctx.tick) * trafficMul;
+  // v0.10: active promotion lifts traffic (+up to 40%) and discounts prices.
+  const promo = leversOf(biz).promotion;
+  const promoDisc = currentPromoPctOff(promo, ctx.tick);
+  const trafficLift = promotionTrafficLift(promo, ctx.tick);
+  const baseTraffic =
+    marketFootTraffic(market, ctx.macro, ctx.tick) * trafficMul * trafficLift;
   const density = competitiveDensity(competitors(ctx, biz));
   const service = avgService(state);
   const ownHalo = hospitalityHalo(ctx.world, biz.ownerId, biz.locationId);
@@ -311,7 +319,8 @@ function onHour(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
   for (const id of Object.keys(state.menu)) {
     const item = state.menu[id]!;
     if (dineInOrders >= counterCap) break;
-    const priceMod = priceAttractiveness(item.price / Math.max(1, item.referencePrice));
+    const effectivePrice = Math.max(1, Math.round(item.price * (1 - promoDisc)));
+    const priceMod = priceAttractiveness(effectivePrice / Math.max(1, item.referencePrice));
     const expected =
       baseTraffic * dineInVisitRate * (0.55 + service) * priceMod * 0.035;
     const demand = Math.max(
@@ -325,7 +334,7 @@ function onHour(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
     const ovenCanMake = Math.floor(ovenRoom / Math.max(0.1, pieWeight));
     const sold = Math.min(demand, counterCap - dineInOrders, ovenCanMake);
     if (sold > 0) {
-      const rev = item.price * sold;
+      const rev = effectivePrice * sold;
       const cogs = Math.round(item.cost * sold * pulse.cogsMultiplier);
       dineInRevenue += rev;
       dineInCogs += cogs;
@@ -346,7 +355,8 @@ function onHour(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
     const avgTicketPrice =
       deliveryItems.reduce((a, m) => a + m.price, 0) / deliveryItems.length;
 
-    const priceRatio = avgTicketPrice /
+    const effectiveAvgTicketPrice = avgTicketPrice * (1 - promoDisc);
+    const priceRatio = effectiveAvgTicketPrice /
       (deliveryItems.reduce((a, m) => a + m.referencePrice, 0) /
         Math.max(1, deliveryItems.length));
     const priceMod = priceAttractiveness(priceRatio);
@@ -361,7 +371,7 @@ function onHour(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
     deliveryOrders = Math.min(demand, deliveryCap, ovenCanMake);
 
     if (deliveryOrders > 0) {
-      const rev = Math.round(avgTicketPrice * deliveryOrders);
+      const rev = Math.round(effectiveAvgTicketPrice * deliveryOrders);
       const cogs = Math.round(
         avgTicketCost * deliveryOrders * pulse.cogsMultiplier,
       );
@@ -585,10 +595,13 @@ function onWeek(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
   );
   // v0.10: 24/7 or 140+ hr/wk → +1/+2 CSAT for convenience.
   const hoursBonus = hoursCsatBonus(leversOf(biz).hours);
+  // v0.10: active promo bleeds CSAT; memory window gives a small post-promo bump.
+  const promoDelta = promotionCsatDelta(leversOf(biz).promotion, ctx.tick);
   const target = 55 + service * 30 + csatMarketingScore * 5 + hoursBonus;
   const next =
     biz.kpis.customerSatisfaction +
-    (Math.max(0, Math.min(90, target)) - biz.kpis.customerSatisfaction) * 0.2;
+    (Math.max(0, Math.min(90, target)) - biz.kpis.customerSatisfaction) * 0.2 +
+    promoDelta;
 
   // Reset weekly.
   state.weeklyRevenueDineIn = 0;

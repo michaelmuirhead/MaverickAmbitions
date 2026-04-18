@@ -44,11 +44,14 @@ import { getPulseBundle } from "../macro/events";
 import { marketFootTraffic } from "../economy/market";
 
 import {
+  currentPromoPctOff,
   effectiveMarketingScore,
   hourlyWageMultiplier,
   hoursCsatBonus,
   isBusinessOpenNow,
   leversOf,
+  promotionCsatDelta,
+  promotionTrafficLift,
   totalWeeklyMarketing,
 } from "./leverState";
 
@@ -353,7 +356,11 @@ function onHour(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
   const service = avgService(state);
   const marketingScore = effectiveMarketingScore(leversOf(biz), market);
 
-  const rawTraffic = marketFootTraffic(market, ctx.macro, ctx.tick);
+  // v0.10: active promotion boosts admissions (+up to 40%) and discounts tickets.
+  const promo = leversOf(biz).promotion;
+  const promoDisc = currentPromoPctOff(promo, ctx.tick);
+  const trafficLift = promotionTrafficLift(promo, ctx.tick);
+  const rawTraffic = marketFootTraffic(market, ctx.macro, ctx.tick) * trafficLift;
   const streamingDrag = 1 - state.streamingPressure;
 
   let hourAdmissions = 0;
@@ -391,7 +398,8 @@ function onHour(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
     const admissions = Math.round(screen.capacity * utilization * screen.condition);
     if (admissions <= 0) continue;
 
-    const ticketPrice = state.ticketPriceCents + (screen.premium ? state.ticketPricePremiumBonus : 0);
+    const ticketPriceBase = state.ticketPriceCents + (screen.premium ? state.ticketPricePremiumBonus : 0);
+    const ticketPrice = Math.max(1, Math.round(ticketPriceBase * (1 - promoDisc)));
     const boxOffice = admissions * ticketPrice;
     const distributorShare = Math.round(boxOffice * film.distributorSharePct);
 
@@ -624,6 +632,8 @@ function onWeek(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
     ctx.world.markets[biz.locationId],
   );
   const hoursBonus = hoursCsatBonus(leversOf(biz).hours);
+  // v0.10: active promo bleeds CSAT; memory window gives a small post-promo bump.
+  const promoDelta = promotionCsatDelta(leversOf(biz).promotion, ctx.tick);
   const target =
     55 +
     csatMarketingScore * 10 +
@@ -632,7 +642,8 @@ function onWeek(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
     hoursBonus;
   const next =
     biz.kpis.customerSatisfaction +
-    (Math.max(0, Math.min(90, target)) - biz.kpis.customerSatisfaction) * 0.18;
+    (Math.max(0, Math.min(90, target)) - biz.kpis.customerSatisfaction) * 0.18 +
+    promoDelta;
 
   // Reset weekly.
   state.weeklyBoxOfficeAcc = 0;

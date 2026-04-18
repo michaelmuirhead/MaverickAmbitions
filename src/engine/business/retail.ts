@@ -30,11 +30,14 @@ import {
 } from "../economy/market";
 import { hospitalityHalo } from "../economy/reputation";
 import {
+  currentPromoPctOff,
   effectiveMarketingScore,
   hourlyWageMultiplier,
   hoursCsatBonus,
   isBusinessOpenNow,
   leversOf,
+  promotionCsatDelta,
+  promotionTrafficLift,
   totalWeeklyMarketing,
 } from "./leverState";
 import { STARTER_SKUS, type SkuId } from "@/data/items";
@@ -118,7 +121,12 @@ function buildInitialSkus(): Record<SkuId, CornerStoreSku> {
       referencePrice: sku.basePrice,
       stock: sku.initialStock,
       restockThreshold: Math.floor(sku.initialStock * 0.25),
-      restockBatch: sku.initialStock,
+      // v0.10.1 balance pass: restockBatch refills to ~50% of initial
+      // rather than all the way back to full (which was over-buying
+      // inventory and inflating apparent weekly COGS). The starter
+      // store still carries 6 weeks of cola on the shelf — plenty —
+      // while new restocks are sized to ~actual sell-through.
+      restockBatch: Math.max(1, Math.floor(sku.initialStock * 0.5)),
     };
   }
   return out;
@@ -135,10 +143,14 @@ function createBusiness(params: {
   const state: CornerStoreState = {
     skus: buildInitialSkus(),
     staff: [
+      // v0.10.1 balance pass: starter clerk is a $14/hr part-timer rather
+      // than the $18 base retail wage. A 168-hour/wk business can't clear
+      // its nut on the base wage in week 1 — the part-timer starting rate
+      // gives the player a fighting chance before they hire up.
       {
         id: `${params.id}-clerk-1`,
         name: "Clerk Alpha",
-        hourlyWageCents: ECONOMY.BASE_HOURLY_WAGE_CENTS,
+        hourlyWageCents: 1400,
         skill: 45,
         morale: 70,
       },
@@ -174,7 +186,11 @@ function createBusiness(params: {
     name: params.name,
     locationId: params.locationId,
     openedAtTick: params.tick,
-    cash: dollars(5_000), // operating cash left after buildout
+    // v0.10.1 balance pass: 8k of operating cash left after buildout
+    // (was 5k). The extra 3k buys ~1.5 weeks of restock runway so a
+    // well-run store isn't forced into an empty-shelves death spiral
+    // before marketing / pricing levers have had time to take effect.
+    cash: dollars(8_000),
     state: state as unknown as Record<string, unknown>,
     kpis,
     derived,
@@ -237,7 +253,13 @@ function onHour(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
   // commodity_shortage. Traffic multiplier currently only keys cafe/bar/restaurant.
   const pulse = getPulseBundle(ctx.world.activeEvents ?? []);
 
-  const traffic = marketFootTraffic(market, ctx.macro, ctx.tick);
+  // v0.10: active promotion pulls a traffic lift (capped +40% at deep
+  // discounts); SKU prices are discounted below.
+  const promo = leversOf(biz).promotion;
+  const promoDisc = currentPromoPctOff(promo, ctx.tick);
+  const trafficLift = promotionTrafficLift(promo, ctx.tick);
+  const traffic =
+    marketFootTraffic(market, ctx.macro, ctx.tick) * trafficLift;
   const density = competitiveDensity(competitorCountInMarket(ctx.world, biz));
 
   // Service quality from staff (average morale * skill).
@@ -266,20 +288,32 @@ function onHour(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
     const sku = state.skus[skuId]!;
     if (sku.stock <= 0) continue;
 
-    const priceRatio = sku.price / Math.max(1, sku.referencePrice);
+    // Effective price under active promotion is (1 - discount) × sticker.
+    const effectivePrice = Math.max(1, Math.round(sku.price * (1 - promoDisc)));
+    const priceRatio = effectivePrice / Math.max(1, sku.referencePrice);
     const priceMod = priceAttractiveness(priceRatio);
     const conversion = ECONOMY.BASE_CONVERSION * priceMod * (0.6 + avgService);
 
-    // Expected buyers for this SKU in this hour.
-    const expected = traffic * visitRate * conversion * 0.05;
-    const unitsSold = Math.min(
-      sku.stock,
-      Math.max(0, Math.round(expected + ctx.rng.nextFloat(-1, 1))),
-    );
+    // Expected buyers for this SKU in this hour. v0.10.1 balance pass:
+    // bumped per-SKU scale from 0.05 → 0.18 so traffic / visitRate /
+    // desirability translate into visible revenue swings, and so a
+    // well-run starter store can clear its nut by ~week 2.
+    const expected = traffic * visitRate * conversion * 0.18;
+    // v0.10.1 balance pass: switched noise model from additive `expected
+    // + rng(-1, 1)` to a Poisson-like `floor(expected) + Bernoulli(frac)`.
+    // With the additive model, the ±1 term dominated whenever expected
+    // was small (< 0.5), capping each slot at "0 or 1 with ~30% chance
+    // regardless of traffic" — so bumping traffic or visit rate barely
+    // moved revenue. The Poisson model preserves E[units] = expected
+    // exactly, so upstream tuning is finally load-bearing.
+    const whole = Math.floor(expected);
+    const frac = expected - whole;
+    const stochastic = ctx.rng.nextFloat(0, 1) < frac ? 1 : 0;
+    const unitsSold = Math.min(sku.stock, Math.max(0, whole + stochastic));
 
     if (unitsSold > 0) {
       sku.stock -= unitsSold;
-      const rev = sku.price * unitsSold;
+      const rev = effectivePrice * unitsSold;
       const cogs = Math.round(sku.cost * unitsSold * pulse.cogsMultiplier);
       hourRevenue += rev;
       hourCogs += cogs;
@@ -327,7 +361,14 @@ function onHour(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
   state.weeklyVisitorsAcc = (state.weeklyVisitorsAcc ?? 0) + visitorsThisHour;
   state.weeklyUnitsSoldAcc = (state.weeklyUnitsSoldAcc ?? 0) + hourUnitsSold;
 
-  const newCash = biz.cash + hourRevenue - hourCogs; // wages paid weekly
+  // v0.10.1 balance pass: cash is debited by inventory purchases in
+  // `onDay` (see restock block). The hourly `cogs` ledger entry is kept
+  // for P&L / KPI reporting — but we must NOT debit cash here a second
+  // time, or every unit is charged to cash twice (once when bought,
+  // once when sold). That double-debit was the source of the illusory
+  // ~13% gross margin we saw in probe runs despite the SKU table
+  // carrying a blended ~55% markup. Wages still paid weekly.
+  const newCash = biz.cash + hourRevenue;
 
   const updated: Business = {
     ...biz,
@@ -359,26 +400,37 @@ function onDay(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
   const ledgerEntries: LedgerEntry[] = [];
   let cash = biz.cash;
 
-  // Restock below threshold.
+  // Restock below threshold. v0.10.1 balance pass: under cash pressure,
+  // order whatever `cash` can afford instead of silently skipping the
+  // restock. Previously a negative / tight-cash store watched its
+  // shelves drain to zero, revenue collapse, and the player had no
+  // warning — the classic retail death spiral. With partial restocks,
+  // revenue decays gracefully and the loss signal is visible via
+  // weekly-revenue KPI rather than hidden behind empty shelves.
   for (const skuId of Object.keys(state.skus) as SkuId[]) {
     const sku = state.skus[skuId]!;
     if (sku.stock < sku.restockThreshold) {
-      const order = sku.restockBatch - sku.stock;
-      const cost = sku.cost * order;
-      if (cash >= cost) {
-        sku.stock += order;
-        cash -= cost;
-        ledgerEntries.push(
-          ledger(
-            `restock-${biz.id}-${skuId}-${ctx.tick}`,
-            ctx.tick,
-            -cost,
-            "inventory_purchase",
-            `Restock ${skuId} (${order} units)`,
-            biz.id,
-          ),
-        );
-      }
+      const fullOrder = sku.restockBatch - sku.stock;
+      const affordableUnits =
+        cash >= sku.cost * fullOrder
+          ? fullOrder
+          : Math.max(0, Math.floor(cash / Math.max(1, sku.cost)));
+      if (affordableUnits <= 0) continue;
+      const cost = sku.cost * affordableUnits;
+      sku.stock += affordableUnits;
+      cash -= cost;
+      ledgerEntries.push(
+        ledger(
+          `restock-${biz.id}-${skuId}-${ctx.tick}`,
+          ctx.tick,
+          -cost,
+          "inventory_purchase",
+          affordableUnits < fullOrder
+            ? `Partial restock ${skuId} (${affordableUnits}/${fullOrder} units)`
+            : `Restock ${skuId} (${affordableUnits} units)`,
+          biz.id,
+        ),
+      );
     }
   }
 
@@ -494,8 +546,13 @@ function onWeek(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
   state.weeklyVisitorsAcc = 0;
   state.weeklyUnitsSoldAcc = 0;
 
-  // v0.10: 24/7 (or 140+ hr/wk) gives a small convenience CSAT bonus.
-  const hoursBonus = hoursCsatBonus(leversOf(biz).hours);
+  // v0.10 lever CSAT contributions:
+  //   · hours:    +1/+2 for 140+/168 hr weeks
+  //   · promo:    negative while active (deep discounts erode brand), small
+  //               positive "deal memory" for ~4 weeks after.
+  const levers = leversOf(biz);
+  const hoursBonus = hoursCsatBonus(levers.hours);
+  const promoDelta = promotionCsatDelta(levers.promotion, ctx.tick);
   const kpis: BusinessKPIs = {
     ...biz.kpis,
     weeklyRevenue,
@@ -508,6 +565,7 @@ function onWeek(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
         biz.kpis.customerSatisfaction +
           (weeklyRevenue > weeklyExpenses ? 1 : -2) +
           hoursBonus +
+          promoDelta +
           ctx.rng.nextFloat(-1, 1),
       ),
     ),

@@ -43,11 +43,14 @@ import { getPulseBundle } from "../macro/events";
 import { competitiveDensity, marketFootTraffic } from "../economy/market";
 import { hospitalityHalo } from "../economy/reputation";
 import {
+  currentPromoPctOff,
   effectiveMarketingScore,
   hourlyWageMultiplier,
   hoursCsatBonus,
   isBusinessOpenNow,
   leversOf,
+  promotionCsatDelta,
+  promotionTrafficLift,
   totalWeeklyMarketing,
 } from "./leverState";
 
@@ -284,8 +287,12 @@ function onHour(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
           : 0.25;
 
   const density = competitiveDensity(competitorClubs(ctx.world, biz));
+  // v0.10: active promotion boosts draw (+up to 40%) and discounts cover/drinks.
+  const promo = leversOf(biz).promotion;
+  const promoDisc = currentPromoPctOff(promo, ctx.tick);
+  const trafficLift = promotionTrafficLift(promo, ctx.tick);
   const rawMarketDemand =
-    marketFootTraffic(market, ctx.macro, 12 + (ctx.tick % 24)) * 0.6; // abuse daytime traffic metric as population proxy
+    marketFootTraffic(market, ctx.macro, 12 + (ctx.tick % 24)) * 0.6 * trafficLift; // abuse daytime traffic metric as population proxy
   const marketingScore = effectiveMarketingScore(leversOf(biz), market);
   const demandMul =
     (0.5 + marketingScore) *
@@ -304,18 +311,20 @@ function onHour(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
   state.capacityFill = drawnCrowd / Math.max(1, state.capacity);
 
   // Door revenue = cover × crowd. Weekday crowds sometimes get in free;
-  // model this by halving cover collection outside peak.
+  // model this by halving cover collection outside peak. Promotion discount
+  // bleeds both cover and bar receipts.
   const coverPerHead = peak ? state.coverChargeCents : Math.round(state.coverChargeCents * 0.4);
-  const coverRevenue = coverPerHead * drawnCrowd;
+  const coverRevenue = Math.round(coverPerHead * drawnCrowd * (1 - promoDisc));
 
   // Bar revenue: average ticket × fraction that buy per hour. Bottle COGS
   // is ~25% — liquor tax pulse bumps it.
   const drinksPerHead = 0.8 + (peak ? 0.4 : 0);
   const avgDrinkPrice = dollars(14);
-  const barRevenue = Math.round(drinksPerHead * drawnCrowd * avgDrinkPrice);
+  const barRevenue = Math.round(drinksPerHead * drawnCrowd * avgDrinkPrice * (1 - promoDisc));
   const barCogs = Math.round(barRevenue * 0.25 * pulse.cogsMultiplier * liquorTaxMul);
 
   // VIP revenue: tables booked scales with demand fill and peak.
+  // VIP bottle service is NOT discounted — promos target mass-market drink/door.
   const vipFillBase = peak ? 0.65 : 0.2;
   const vipFill = Math.min(
     1,
@@ -559,6 +568,8 @@ function onWeek(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
   );
   // v0.10: 24/7 / 140+ hr/wk schedule bonus (e.g. 6-day late-night run).
   const hoursBonus = hoursCsatBonus(leversOf(biz).hours);
+  // v0.10: active promo bleeds CSAT; memory window gives a small post-promo bump.
+  const promoDelta = promotionCsatDelta(leversOf(biz).promotion, ctx.tick);
   const target =
     55 +
     state.venueTier * 25 +
@@ -568,7 +579,8 @@ function onWeek(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
     complaintDrag;
   const next =
     biz.kpis.customerSatisfaction +
-    (Math.max(0, Math.min(90, target)) - biz.kpis.customerSatisfaction) * 0.2;
+    (Math.max(0, Math.min(90, target)) - biz.kpis.customerSatisfaction) * 0.2 +
+    promoDelta;
 
   // Reset weekly.
   state.weeklyCoverAcc = 0;

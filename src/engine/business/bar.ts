@@ -41,11 +41,14 @@ import {
 import { hospitalityHalo } from "../economy/reputation";
 import { BAR_DRINKS, type DrinkId } from "@/data/barDrinks";
 import {
+  currentPromoPctOff,
   effectiveMarketingScore,
   hourlyWageMultiplier,
   hoursCsatBonus,
   isBusinessOpenNow,
   leversOf,
+  promotionCsatDelta,
+  promotionTrafficLift,
   totalWeeklyMarketing,
 } from "./leverState";
 
@@ -314,8 +317,13 @@ function onHour(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
   const pulse = getPulseBundle(ctx.world.activeEvents ?? []);
   const trafficMul = pulse.trafficMultiplierByType.bar ?? 1;
 
+  // v0.10: active promotion lifts traffic (+up to 40%) and discounts prices
+  // on top of happy hour.
+  const promo = leversOf(biz).promotion;
+  const promoDisc = currentPromoPctOff(promo, ctx.tick);
+  const trafficLift = promotionTrafficLift(promo, ctx.tick);
   const baseTraffic =
-    marketFootTraffic(market, ctx.macro, ctx.tick) * peak * trafficMul;
+    marketFootTraffic(market, ctx.macro, ctx.tick) * peak * trafficMul * trafficLift;
   const density = competitiveDensity(competitorBarsInMarket(ctx.world, biz));
   const service = avgBartenderService(state); // 0..1
 
@@ -364,10 +372,12 @@ function onHour(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
     const item = state.menu[drinkId]!;
     const share = item.popularity / Math.max(0.01, weightTotal);
 
-    const effectivePrice =
+    const happyPrice =
       happy && item.happyHourEligible
         ? Math.round(item.price * (1 - hh.discount))
         : item.price;
+    // Stack: promo discount applies on top of happy-hour effective price.
+    const effectivePrice = Math.max(1, Math.round(happyPrice * (1 - promoDisc)));
     const priceRatio = effectivePrice / Math.max(1, item.referencePrice);
     const priceMod = priceAttractiveness(priceRatio);
 
@@ -383,10 +393,7 @@ function onHour(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
     if (sold > 0) {
       const rev = effectivePrice * sold;
       const cogs = Math.round(item.cost * sold * pulse.cogsMultiplier);
-      const discount =
-        happy && item.happyHourEligible
-          ? Math.max(0, item.price - effectivePrice) * sold
-          : 0;
+      const discount = Math.max(0, item.price - effectivePrice) * sold;
       hourRevenue += rev;
       hourCogs += cogs;
       hourDiscount += discount;
@@ -522,6 +529,8 @@ function onDay(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
   );
   // v0.10: 24/7 / late-night extended schedule adds a small convenience CSAT.
   const hoursBonus = hoursCsatBonus(leversOf(biz).hours);
+  // v0.10: active promo bleeds CSAT; memory window gives a small post-promo bump.
+  const promoDelta = promotionCsatDelta(leversOf(biz).promotion, ctx.tick);
   const target =
     50 +
     service * 30 +
@@ -534,7 +543,8 @@ function onDay(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
   const ceiling = tier.csatCeiling;
   const clampedTarget = Math.max(0, Math.min(ceiling, target));
   const prev = biz.kpis.customerSatisfaction;
-  const next = prev + (clampedTarget - prev) * 0.13;
+  // Daily pull + 1/7 of the weekly promo delta for smooth ramp.
+  const next = prev + (clampedTarget - prev) * 0.13 + promoDelta / 7;
 
   if (prev < 85 && next >= 85) {
     events.push({

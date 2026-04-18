@@ -43,11 +43,14 @@ import {
 import { hospitalityHalo } from "../economy/reputation";
 import { CAFE_MENU, type MenuItemId } from "@/data/menu";
 import {
+  currentPromoPctOff,
   effectiveMarketingScore,
   hourlyWageMultiplier,
   hoursCsatBonus,
   isBusinessOpenNow,
   leversOf,
+  promotionCsatDelta,
+  promotionTrafficLift,
   totalWeeklyMarketing,
 } from "./leverState";
 
@@ -303,8 +306,12 @@ function onHour(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
   const pulse = getPulseBundle(ctx.world.activeEvents ?? []);
   const trafficMul = pulse.trafficMultiplierByType.cafe ?? 1;
 
+  // v0.10: active promotion lifts traffic (+up to 40%) and discounts prices.
+  const promo = leversOf(biz).promotion;
+  const promoDisc = currentPromoPctOff(promo, ctx.tick);
+  const trafficLift = promotionTrafficLift(promo, ctx.tick);
   const baseTraffic =
-    marketFootTraffic(market, ctx.macro, ctx.tick) * trafficMul;
+    marketFootTraffic(market, ctx.macro, ctx.tick) * trafficMul * trafficLift;
   const density = competitiveDensity(competitorCafesInMarket(ctx.world, biz));
   const service = avgBaristaService(state); // 0..1
 
@@ -354,7 +361,8 @@ function onHour(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
     if (covers >= throughputCap) break;
     const item = state.menu[menuId]!;
     if (item.stock <= 0) continue;
-    const priceRatio = item.price / Math.max(1, item.referencePrice);
+    const effectivePrice = Math.max(1, Math.round(item.price * (1 - promoDisc)));
+    const priceRatio = effectivePrice / Math.max(1, item.referencePrice);
     const priceMod = priceAttractiveness(priceRatio);
     const share = 1 / itemCount; // uniform; refinable later by popularity
     const expected =
@@ -368,7 +376,7 @@ function onHour(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
 
     if (sold > 0) {
       item.stock -= sold;
-      const rev = item.price * sold;
+      const rev = effectivePrice * sold;
       const cogs = Math.round(item.cost * sold * pulse.cogsMultiplier);
       hourRevenue += rev;
       hourCogs += cogs;
@@ -514,6 +522,8 @@ function onDay(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
   );
   // v0.10: 24/7 or 140+ hr/wk schedule → small convenience CSAT bonus.
   const hoursBonus = hoursCsatBonus(leversOf(biz).hours);
+  // v0.10: active promo bleeds CSAT; memory window gives a small post-promo bump.
+  const promoDelta = promotionCsatDelta(leversOf(biz).promotion, ctx.tick);
   const target =
     50 +
     service * 35 + // service quality is most of the signal
@@ -524,11 +534,13 @@ function onDay(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
     wasteFactor * 4 -
     state.complaintsThisWeek * 1.2;
 
-  // Pull CSAT toward target (bounded by tier ceiling).
+  // Pull CSAT toward target (bounded by tier ceiling). Daily pull + a
+  // fractional slice (1/7) of the weekly promo delta so the promo signal
+  // builds smoothly rather than ratcheting in one-day steps.
   const ceiling = tier.csatCeiling;
   const clampedTarget = Math.max(0, Math.min(ceiling, target));
   const prev = biz.kpis.customerSatisfaction;
-  const next = prev + (clampedTarget - prev) * 0.15; // 15% pull per day
+  const next = prev + (clampedTarget - prev) * 0.15 + promoDelta / 7;
 
   // Occasional milestone event when CSAT crosses 85.
   if (prev < 85 && next >= 85) {

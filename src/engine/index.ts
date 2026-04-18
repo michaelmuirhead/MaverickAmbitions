@@ -25,12 +25,19 @@ export interface NewGameOptions {
   founderName?: string;
   seed?: string;
   difficulty?: 1 | 2 | 3 | 4 | 5;
+  /** Override founder's starting personal cash, in cents. Defaults to $15,000. */
+  startingCashCents?: number;
 }
 
 export function newGame(opts: NewGameOptions = {}): GameState {
   const seed = opts.seed ?? nanoid(8);
   const rng = createRng(seed);
-  const founder = createFounder({ name: opts.founderName, rng: rng.child("founder"), tick: 0 });
+  const founder = createFounder({
+    name: opts.founderName,
+    rng: rng.child("founder"),
+    tick: 0,
+    startingCashCents: opts.startingCashCents,
+  });
   const macro: MacroState = initialMacroState();
 
   const markets = { ...STARTER_MARKETS };

@@ -410,6 +410,51 @@ export function currentPromoPctOff(
   return isPromotionActive(promo, tick) ? Math.min(0.5, Math.max(0, promo!.pctOff)) : 0;
 }
 
+/**
+ * Foot-traffic lift multiplier from an active promotion. Returns 1.0 when no
+ * promo is active. Capped at +40% even for deep discounts — a 50% off sale
+ * pulls a lot of extra traffic but physical space and staffing still bind.
+ *
+ * Curve:
+ *   0% off  → 1.00×
+ *   10% off → 1.12×
+ *   20% off → 1.25×
+ *   30% off → 1.38×
+ *   40% off → 1.40× (capped)
+ */
+export function promotionTrafficLift(
+  promo: Promotion | null,
+  tick: Tick,
+): number {
+  const disc = currentPromoPctOff(promo, tick);
+  if (disc <= 0) return 1.0;
+  return 1 + Math.min(0.4, disc * 1.25);
+}
+
+/**
+ * Weekly CSAT delta from the promo lifecycle. Deep discounts during an active
+ * promo signal "this place is cheap, not premium" and pull CSAT down. After
+ * the promo ends, a small positive "deal memory" bump runs for ~4 weeks as
+ * bargain-hunters remember the sale fondly.
+ *
+ *   Active:  -min(1.5, pctOff * 3)   → 20% off = -0.6/wk, 30% = -0.9, 50% caps at -1.5
+ *   Memory:  +0.5/wk
+ *   Else:     0
+ */
+export function promotionCsatDelta(
+  promo: Promotion | null,
+  tick: Tick,
+): number {
+  if (!promo) return 0;
+  if (isPromotionActive(promo, tick)) {
+    return -Math.min(1.5, Math.max(0, promo.pctOff) * 3);
+  }
+  if (isPromotionMemoryActive(promo, tick)) {
+    return 0.5;
+  }
+  return 0;
+}
+
 // ========== Business-level convenience ==========
 
 /** Safe LeverState accessor — falls back to retail defaults if missing. */

@@ -19,8 +19,13 @@ export const ECONOMY = {
   // --- Retail / foot traffic ---
   /** Typical daytime foot traffic for a mid-quality neighborhood per hour. */
   BASE_HOURLY_TRAFFIC: 120,
-  /** Fraction of foot traffic that actually enters a given store (pre-mods). */
-  BASE_VISIT_RATE: 0.06,
+  /**
+   * Fraction of foot traffic that actually enters a given store (pre-mods).
+   * v0.10.1 balance pass: bumped 0.06 → 0.09 so a default corner store at a
+   * mid-quality neighborhood can clear its fixed costs in ~week 2 with good
+   * play instead of entering a revenue-vs-wages death spiral at week 3–4.
+   */
+  BASE_VISIT_RATE: 0.09,
   /** Baseline conversion inside the store. */
   BASE_CONVERSION: 0.45,
 

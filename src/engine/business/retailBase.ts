@@ -52,11 +52,14 @@ import {
   priceAttractiveness,
 } from "../economy/market";
 import {
+  currentPromoPctOff,
   effectiveMarketingScore,
   hourlyWageMultiplier,
   hoursCsatBonus,
   isBusinessOpenNow,
   leversOf,
+  promotionCsatDelta,
+  promotionTrafficLift,
   totalWeeklyMarketing,
 } from "./leverState";
 
@@ -322,8 +325,13 @@ export function makeRetailModule(
     // Seasonality multiplier.
     const season = config.seasonality?.[monthIndex(ctx.tick)] ?? 1;
 
+    // v0.10: active promotion lifts foot traffic (capped +40%) and applies
+    // a store-wide price discount below.
+    const promo = leversOf(biz).promotion;
+    const promoDisc = currentPromoPctOff(promo, ctx.tick);
+    const trafficLift = promotionTrafficLift(promo, ctx.tick);
     const baseTraffic =
-      marketFootTraffic(market, ctx.macro, ctx.tick) * season;
+      marketFootTraffic(market, ctx.macro, ctx.tick) * season * trafficLift;
     const density = competitiveDensity(competitorsInMarket(ctx.world, biz));
     const service = avgService(state);
 
@@ -357,7 +365,9 @@ export function makeRetailModule(
       const sku = state.skus[skuId]!;
       if (sku.stock <= 0) continue;
 
-      const priceRatio = sku.price / Math.max(1, sku.referencePrice);
+      // Effective sticker price under any active promotion.
+      const effectivePrice = Math.max(1, Math.round(sku.price * (1 - promoDisc)));
+      const priceRatio = effectivePrice / Math.max(1, sku.referencePrice);
       const pa = priceAttractiveness(priceRatio);
       // Push elasticity around 1.0 via the bias.
       const priceMod =
@@ -378,7 +388,7 @@ export function makeRetailModule(
 
       if (unitsSold > 0) {
         sku.stock -= unitsSold;
-        const rev = sku.price * unitsSold;
+        const rev = effectivePrice * unitsSold;
         const cogs = Math.round(sku.cost * unitsSold * pulse.cogsMultiplier);
         hourRevenue += rev;
         hourCogs += cogs;
@@ -648,8 +658,12 @@ export function makeRetailModule(
         ctx.world.markets[biz.locationId],
       ) + (config.weeklyEventTrafficBump ?? 0),
     );
-    // v0.10: 24/7 (or 140+ hr/wk) gets a small convenience CSAT bonus.
-    const hoursBonus = hoursCsatBonus(leversOf(biz).hours);
+    // v0.10: 24/7 (or 140+ hr/wk) gets a small convenience CSAT bonus;
+    // active promotions erode CSAT modestly while running with a small
+    // positive "deal memory" rebound for ~4 weeks after.
+    const levers = leversOf(biz);
+    const hoursBonus = hoursCsatBonus(levers.hours);
+    const promoDelta = promotionCsatDelta(levers.promotion, ctx.tick);
     const target =
       55 +
       service * 25 +
@@ -660,7 +674,8 @@ export function makeRetailModule(
     const next =
       biz.kpis.customerSatisfaction +
       (Math.max(0, Math.min(92, target)) - biz.kpis.customerSatisfaction) *
-        0.15;
+        0.15 +
+      promoDelta;
 
     // v0.8.1: compute weekly traffic + conversion KPIs BEFORE resetting.
     const weeklyVisitors = Math.round(state.weeklyVisitorsAcc ?? 0);

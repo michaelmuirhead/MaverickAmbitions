@@ -54,51 +54,48 @@ export function TopBar({ bucket }: { bucket: "phone" | "tablet" | "desktop" }) {
           </div>
         </div>
         <div className="flex items-center gap-1">
-          {/* Fast-forward bursts. Hidden on phone to keep the bar light;
-              phones still get the full set via SettingsPage → Debug or
-              the dedicated speed buttons. Disabled when the lineage has
+          {/* Fast-forward bursts. v0.10.1: shown on all buckets including
+              phone (previously hidden to keep the bar light). On phone
+              we collapse to compact "D ▸ / W ▸ / E ▸" labels; tablet &
+              desktop keep the full words. Disabled when the lineage has
               ended so Day/Week can't silently halt on the dead-guard. */}
-          {!phone && (
-            <>
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => advanceUntil("day")}
-                disabled={dead}
-                title={disabledTitle ?? "Advance to the next day start"}
-                aria-label="Advance to next day"
-                className="!min-h-0 h-8 px-2"
-              >
-                Day ▸
-              </Button>
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => advanceUntil("week")}
-                disabled={dead}
-                title={disabledTitle ?? "Advance to next Monday 00:00"}
-                aria-label="Advance to next week"
-                className="!min-h-0 h-8 px-2"
-              >
-                Week ▸
-              </Button>
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => advanceUntil("event")}
-                disabled={dead}
-                title={
-                  disabledTitle ??
-                  "Advance until the next notable event (up to one month)"
-                }
-                aria-label="Advance to next event"
-                className="!min-h-0 h-8 px-2"
-              >
-                Event ▸
-              </Button>
-              <span className="mx-1 h-5 w-px bg-ink-800" aria-hidden />
-            </>
-          )}
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => advanceUntil("day")}
+            disabled={dead}
+            title={disabledTitle ?? "Advance to the next day start"}
+            aria-label="Advance to next day"
+            className="!min-h-0 h-8 px-2"
+          >
+            {phone ? "D ▸" : "Day ▸"}
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => advanceUntil("week")}
+            disabled={dead}
+            title={disabledTitle ?? "Advance to next Monday 00:00"}
+            aria-label="Advance to next week"
+            className="!min-h-0 h-8 px-2"
+          >
+            {phone ? "W ▸" : "Week ▸"}
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => advanceUntil("event")}
+            disabled={dead}
+            title={
+              disabledTitle ??
+              "Advance until the next notable event (up to one month)"
+            }
+            aria-label="Advance to next event"
+            className="!min-h-0 h-8 px-2"
+          >
+            {phone ? "E ▸" : "Event ▸"}
+          </Button>
+          {!phone && <span className="mx-1 h-5 w-px bg-ink-800" aria-hidden />}
           {([0, 1, 2, 4, 8] as const).map((s) => (
             <Button
               key={s}

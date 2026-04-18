@@ -44,11 +44,14 @@ import {
   priceAttractiveness,
 } from "../economy/market";
 import {
+  currentPromoPctOff,
   effectiveMarketingScore,
   hourlyWageMultiplier,
   hoursCsatBonus,
   isBusinessOpenNow,
   leversOf,
+  promotionCsatDelta,
+  promotionTrafficLift,
   totalWeeklyMarketing,
 } from "./leverState";
 
@@ -304,8 +307,13 @@ function onHour(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
   const routeMul = peak ? route.peakMul : route.offPeakMul;
   const weekendMul = isWeekend(ctx.tick) ? route.weekendMul : 1.0;
 
+  // v0.10: active promotion lifts traffic (+up to 40%) and discounts prices.
+  const promo = leversOf(biz).promotion;
+  const promoDisc = currentPromoPctOff(promo, ctx.tick);
+  const trafficLift = promotionTrafficLift(promo, ctx.tick);
   // Compose the truck's effective traffic.
-  const baseTraffic = marketFootTraffic(market, ctx.macro, ctx.tick);
+  const baseTraffic =
+    marketFootTraffic(market, ctx.macro, ctx.tick) * trafficLift;
   const weather = state.weatherToday;
   const density = competitiveDensity(
     countSameTypeCompetitors(ctx.world, biz) / 2, // food trucks don't crowd each other as hard
@@ -345,7 +353,8 @@ function onHour(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
     if (covers >= throughputCap) break;
     const item = state.items[id]!;
     if (item.stock <= 0) continue;
-    const priceRatio = item.price / Math.max(1, item.referencePrice);
+    const effectivePrice = Math.max(1, Math.round(item.price * (1 - promoDisc)));
+    const priceRatio = effectivePrice / Math.max(1, item.referencePrice);
     const priceMod = priceAttractiveness(priceRatio);
     const share = 1 / itemCount;
     const expected =
@@ -357,7 +366,7 @@ function onHour(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
     const sold = Math.min(item.stock, demand, throughputCap - covers);
     if (sold > 0) {
       item.stock -= sold;
-      const rev = item.price * sold;
+      const rev = effectivePrice * sold;
       const cogs = Math.round(item.cost * sold * pulse.cogsMultiplier);
       hourRevenue += rev;
       hourCogs += cogs;
@@ -591,6 +600,8 @@ function onWeek(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
   const service = avgCrewService(state);
   // v0.10: 24/7 / 140+ hr/wk hours bonus. Rare for a food truck but possible.
   const hoursBonus = hoursCsatBonus(leversOf(biz).hours);
+  // v0.10: active promo bleeds CSAT; memory window gives a small post-promo bump.
+  const promoDelta = promotionCsatDelta(leversOf(biz).promotion, ctx.tick);
   const target =
     55 +
     service * 30 +
@@ -598,7 +609,8 @@ function onWeek(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
     hoursBonus -
     state.stormDaysThisWeek * 3;
   const prev = biz.kpis.customerSatisfaction;
-  const next = prev + (Math.max(0, Math.min(95, target)) - prev) * 0.25;
+  const next =
+    prev + (Math.max(0, Math.min(95, target)) - prev) * 0.25 + promoDelta;
 
   // Reset weekly counters.
   state.weeklyRevenueAcc = 0;

@@ -4,12 +4,15 @@
 
 import { nanoid } from "nanoid";
 
-import type { NeedMap, PlayerCharacter, SkillMap, Tick } from "@/types/game";
+import type { Cents, NeedMap, PlayerCharacter, SkillMap, Tick } from "@/types/game";
 
 import { dollars } from "@/lib/money";
 
 import { pickName } from "@/data/names";
 import type { RNG } from "@/lib/rng";
+
+/** Default starting personal cash for a new founder (v0.10.1 — was hardcoded). */
+export const DEFAULT_STARTING_CASH_CENTS: Cents = dollars(15_000);
 
 export function defaultSkills(): SkillMap {
   return {
@@ -36,6 +39,7 @@ export function createFounder(params: {
   name?: string;
   rng: RNG;
   tick: Tick;
+  startingCashCents?: Cents;
 }): PlayerCharacter {
   const name = params.name ?? pickName(params.rng);
   return {
@@ -47,7 +51,7 @@ export function createFounder(params: {
     reputation: 0,
     skills: defaultSkills(),
     needs: defaultNeeds(),
-    personalCash: dollars(15_000),
+    personalCash: params.startingCashCents ?? DEFAULT_STARTING_CASH_CENTS,
     creditScore: 660,
     personalLoans: [],
     childrenIds: [],

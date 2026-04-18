@@ -42,11 +42,14 @@ import {
 import { hospitalityHalo } from "../economy/reputation";
 import { RESTAURANT_MENU, type DishId } from "@/data/restaurantMenu";
 import {
+  currentPromoPctOff,
   effectiveMarketingScore,
   hourlyWageMultiplier,
   hoursCsatBonus,
   isBusinessOpenNow,
   leversOf,
+  promotionCsatDelta,
+  promotionTrafficLift,
   totalWeeklyMarketing,
 } from "./leverState";
 
@@ -364,8 +367,12 @@ function onHour(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
   const pulse = getPulseBundle(ctx.world.activeEvents ?? []);
   const trafficMul = pulse.trafficMultiplierByType.restaurant ?? 1;
 
+  // v0.10: active promotion lifts traffic (+up to 40%) and discounts the check.
+  const promo = leversOf(biz).promotion;
+  const promoDisc = currentPromoPctOff(promo, ctx.tick);
+  const trafficLift = promotionTrafficLift(promo, ctx.tick);
   const baseTraffic =
-    marketFootTraffic(market, ctx.macro, ctx.tick) * peak * trafficMul;
+    marketFootTraffic(market, ctx.macro, ctx.tick) * peak * trafficMul * trafficLift;
   const density = competitiveDensity(competitorRestaurantsInMarket(ctx.world, biz));
   const service = avgServerService(state);
   const kitchen = avgKitchenCraft(state) / 100; // 0..1
@@ -411,10 +418,10 @@ function onHour(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
   // Use average menu price ratio as a single price signal; this is a
   // coarser model than the cafe but fits the check-average pattern.
   const avgPriceRatio =
-    Object.values(state.menu).reduce(
+    (Object.values(state.menu).reduce(
       (a, m) => a + m.price / Math.max(1, m.referencePrice),
       0,
-    ) / Math.max(1, Object.keys(state.menu).length);
+    ) / Math.max(1, Object.keys(state.menu).length)) * (1 - promoDisc);
   const priceMod = priceAttractiveness(avgPriceRatio);
 
   const expectedWalkIns = Math.max(
@@ -440,7 +447,8 @@ function onHour(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
     cogsSum += item.cost * share;
   }
   // A cover buys ~1.6 items worth of check (a main + partial apps/drinks).
-  const perCoverRevenue = Math.round(checkSum * 1.6);
+  // Promo discounts the check but not the cost of goods.
+  const perCoverRevenue = Math.round(checkSum * 1.6 * (1 - promoDisc));
   const perCoverCogs = Math.round(cogsSum * 1.6 * pulse.cogsMultiplier);
 
   const hourRevenue = perCoverRevenue * totalCovers;
@@ -559,6 +567,8 @@ function onDay(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
   // v0.10: convenience bonus for 24/7 or 140+ hr/wk schedules (rare for
   // restaurants but possible for a late-night diner).
   const hoursBonus = hoursCsatBonus(leversOf(biz).hours);
+  // v0.10: active promo bleeds CSAT; memory window gives a small post-promo bump.
+  const promoDelta = promotionCsatDelta(leversOf(biz).promotion, ctx.tick);
   const target =
     50 +
     service * 20 +
@@ -574,7 +584,8 @@ function onDay(biz: Business, ctx: BusinessTickContext): BusinessTickResult {
   const ceiling = program.csatCeiling;
   const clampedTarget = Math.max(0, Math.min(ceiling, target));
   const prev = biz.kpis.customerSatisfaction;
-  const next = prev + (clampedTarget - prev) * 0.13;
+  // Daily pull + 1/7 of the weekly promo delta for smooth ramp.
+  const next = prev + (clampedTarget - prev) * 0.13 + promoDelta / 7;
 
   const events: BusinessTickResult["events"] = [];
   if (prev < 85 && next >= 85) {

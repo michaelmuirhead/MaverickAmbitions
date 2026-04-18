@@ -11,6 +11,12 @@ import { ECONOMY } from "./constants";
 /**
  * Effective foot traffic for a market at a given tick.
  * Diurnal pattern, weekend bump, macro wallet modifier, desirability.
+ *
+ * v0.10.1 balance pass: the desirability curve was widened from
+ * `0.5 + 0.5d` (0.50×…1.00× range) to `0.35 + 0.85d` (0.35×…1.20× range)
+ * so picking a strong neighborhood actually rewards the player. Before
+ * the change, the best and worst markets only differed ~50% on this
+ * factor; after it's ~3.4× end-to-end.
  */
 export function marketFootTraffic(
   market: Market,
@@ -19,7 +25,7 @@ export function marketFootTraffic(
 ): number {
   if (!isBusinessHour(tick)) return 0;
   const populationFactor = market.population / 10_000;
-  const desirability = 0.5 + market.desirability * 0.5;
+  const desirability = 0.35 + market.desirability * 0.85;
   const macroMultiplier = macro.consumerWallet;
   return Math.round(
     ECONOMY.BASE_HOURLY_TRAFFIC *
