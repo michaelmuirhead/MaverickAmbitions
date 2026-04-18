@@ -15,6 +15,7 @@ import {
   selectPlayerRealEstateEquity,
 } from "@/state/selectors";
 import { formatMoney } from "@/lib/money";
+import type { Property } from "@/types/game";
 
 const BAND_COLORS: Record<string, string> = {
   emerald: "text-emerald-300",
@@ -28,7 +29,9 @@ export function FinancePage() {
   const game = useGameStore((s) => s.game)!;
   const refinance = useGameStore((s) => s.refinance);
   const sellProperty = useGameStore((s) => s.sellProperty);
+  const sellHostedProperty = useGameStore((s) => s.sellHostedProperty);
   const [banner, setBanner] = useState<string | undefined>();
+  const [confirmSell, setConfirmSell] = useState<Property | undefined>();
 
   const credit = selectCreditProfile(game);
   const netWorth = selectNetWorth(game);
@@ -238,6 +241,12 @@ export function FinancePage() {
                       variant="ghost"
                       onClick={() => {
                         setBanner(undefined);
+                        if (p.hostedBusinessId) {
+                          // Hosted property — show the relocate-or-close
+                          // confirmation before touching anything.
+                          setConfirmSell(p);
+                          return;
+                        }
                         const res = sellProperty(p.id);
                         if (!res.ok) setBanner(res.error);
                         else
@@ -245,8 +254,13 @@ export function FinancePage() {
                             `Sold ${p.address} — ${formatMoney(res.proceedsCents ?? 0, { compact: true })} proceeds.`,
                           );
                       }}
+                      title={
+                        p.hostedBusinessId
+                          ? "Hosted property — selling will relocate or close the business."
+                          : "Sell at appraised value."
+                      }
                     >
-                      Sell at appraisal
+                      {p.hostedBusinessId ? "Sell (hosted)…" : "Sell at appraisal"}
                     </Button>
                   </div>
                 </div>
@@ -260,6 +274,108 @@ export function FinancePage() {
         Mortgage, maintenance, and appreciation all settle once per in-game
         month. Rivals (operators) will compete for listings; disruptors rent.
       </p>
+
+      {confirmSell && (
+        <SellHostedConfirmDialog
+          property={confirmSell}
+          hostedName={
+            confirmSell.hostedBusinessId
+              ? game.businesses[confirmSell.hostedBusinessId]?.name
+              : undefined
+          }
+          onCancel={() => setConfirmSell(undefined)}
+          onConfirm={() => {
+            const target = confirmSell;
+            setConfirmSell(undefined);
+            setBanner(undefined);
+            const res = sellHostedProperty(target.id);
+            if (!res.ok) {
+              setBanner(res.error ?? "Couldn't sell that property.");
+              return;
+            }
+            const proceeds = formatMoney(res.proceedsCents ?? 0, { compact: true });
+            const bizName =
+              target.hostedBusinessId
+                ? game.businesses[target.hostedBusinessId]?.name ?? "the business"
+                : "the business";
+            if (res.outcome === "relocated") {
+              const deposit = formatMoney(res.depositCents ?? 0, { compact: true });
+              setBanner(
+                `Sold ${target.address} — ${proceeds} proceeds. Relocated ${bizName} to a lease (paid ${deposit} deposit).`,
+              );
+            } else if (res.outcome === "closed") {
+              setBanner(
+                `Sold ${target.address} — ${proceeds} proceeds. ${bizName} couldn't afford a 2-month lease deposit and was closed.`,
+              );
+            } else {
+              setBanner(
+                `Sold ${target.address} — ${proceeds} proceeds.`,
+              );
+            }
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function SellHostedConfirmDialog({
+  property,
+  hostedName,
+  onCancel,
+  onConfirm,
+}: {
+  property: Property;
+  hostedName?: string;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="sell-hosted-title"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onCancel();
+      }}
+    >
+      <div className="w-full max-w-md rounded-2xl border border-ink-700 bg-ink-900 shadow-card p-5">
+        <h2
+          id="sell-hosted-title"
+          className="text-lg font-semibold text-ink-50"
+        >
+          Sell {property.address}?
+        </h2>
+        <p className="mt-2 text-sm text-ink-300">
+          This property hosts <span className="text-ink-50 font-medium">{hostedName ?? "a business"}</span>.
+          You'll still receive the appraised value as proceeds, but the
+          business needs somewhere to go.
+        </p>
+
+        <ul className="mt-3 space-y-2 text-xs text-ink-200">
+          <li className="rounded-lg border border-money/40 bg-money/5 px-3 py-2">
+            <span className="text-money font-semibold">If affordable:</span>{" "}
+            {hostedName ?? "The business"} relocates to a commercial lease.
+            A 2-month deposit is pulled from its operating cash first, then
+            from your personal cash.
+          </li>
+          <li className="rounded-lg border border-loss/40 bg-loss/5 px-3 py-2">
+            <span className="text-loss font-semibold">If not:</span>{" "}
+            {hostedName ?? "The business"} is closed immediately (voluntary
+            close — no bankruptcy hit). The property still sells.
+          </li>
+        </ul>
+
+        <div className="mt-5 flex justify-end gap-2">
+          <Button size="sm" variant="ghost" onClick={onCancel}>
+            Cancel
+          </Button>
+          <Button size="sm" variant="primary" onClick={onConfirm}>
+            Sell property
+          </Button>
+        </div>
+      </div>
     </div>
   );
 }

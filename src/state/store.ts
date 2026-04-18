@@ -11,16 +11,32 @@ import type {
   Business,
   BusinessTypeId,
   Cents,
+  GameSettings,
   GameSpeed,
   GameState,
   Id,
   MacroEventId,
+  MarketingChannel,
 } from "@/types/game";
 
 import { nanoid } from "nanoid";
 
-import { AUTOSAVE_SLOT, loadGame, newGame, saveGame, stepTick } from "@/engine";
+import {
+  AUTOSAVE_SLOT,
+  advanceUntil as engineAdvanceUntil,
+  loadGame,
+  newGame,
+  saveGame,
+  stepTick,
+} from "@/engine";
+import type { AdvanceStop, AdvanceTarget } from "@/engine";
 import { getBusinessModule } from "@/engine/business/registry";
+import { defaultLeversForBusinessType } from "@/engine/business/leverState";
+import { closeBusinessVoluntarily as engineCloseVoluntarily } from "@/engine/business/liquidation";
+import {
+  convertBusinessToLease as engineConvertToLease,
+  convertBusinessToOwned as engineConvertToOwned,
+} from "@/engine/business/relocation";
 import {
   originateMortgage,
   refinanceMortgage,
@@ -39,6 +55,17 @@ interface GameActions {
   autoSave: () => void;
   /** Advance one tick. */
   tick: () => void;
+  /**
+   * Fast-forward: step until the next clock target or qualifying event,
+   * bounded by `maxTicks` (default: day=24, week=168, event=720).
+   * Honors `settings.pauseOnEvent`. Pauses the game (speed=0) when the
+   * burst completes so the player can review the new state without the
+   * interval tick firing on top of the jump.
+   */
+  advanceUntil: (
+    target: AdvanceTarget,
+    maxTicks?: number,
+  ) => { ticksAdvanced: number; stoppedOn: AdvanceStop };
   /** Change game speed. */
   setSpeed: (s: GameSpeed) => void;
   /** Open a business of any registered type at a given market. Enforces unlock + cash gates.
@@ -69,6 +96,56 @@ interface GameActions {
   dismissEvent: (id: Id) => void;
   /** Apply a business state patch (e.g. UI edits pricing). */
   patchBusinessState: (id: Id, patch: Partial<Business["state"]>) => void;
+  /**
+   * v0.10 — set the weekly spend (cents) for a single marketing channel on
+   * a business. Creates the LeverState lazily if absent. Engine decay /
+   * score math picks up the new spend on the next tick.
+   */
+  setBusinessMarketingChannel: (
+    id: Id,
+    channel: MarketingChannel,
+    weeklyCents: Cents,
+  ) => void;
+  /** Voluntarily close a player-owned business — 60% of book recovered, credit -40. */
+  closeBusinessVoluntarily: (
+    id: Id,
+  ) => { ok: boolean; error?: string; proceedsCents?: Cents };
+  /**
+   * v0.9 lease→owned conversion: move a currently-leased business onto a
+   * vacant player-owned property in the same market. Zero cash impact.
+   */
+  convertBusinessToOwned: (
+    bizId: Id,
+    propertyId: Id,
+  ) => { ok: boolean; error?: string };
+  /**
+   * v0.9 owned→lease conversion. Charges a 2-month lease deposit from
+   * the business's operating cash (then player cash). Returns
+   * `insufficientFunds: true` if neither can cover the deposit — the
+   * caller is expected to fall back to voluntary close.
+   */
+  convertBusinessToLease: (
+    bizId: Id,
+  ) => {
+    ok: boolean;
+    error?: string;
+    depositCents?: Cents;
+    insufficientFunds?: boolean;
+  };
+  /**
+   * v0.9 hosted-property sell flow. Relocates the hosted business to a
+   * lease if affordable; otherwise voluntarily closes it; either way
+   * finishes by listing the property for sale at appraised value.
+   */
+  sellHostedProperty: (propertyId: Id) => {
+    ok: boolean;
+    error?: string;
+    outcome?: "relocated" | "closed" | "vacant";
+    proceedsCents?: Cents;
+    depositCents?: Cents;
+  };
+  /** Update the `pauseOnEvent` fast-forward setting. */
+  setPauseOnEvent: (mode: GameSettings["pauseOnEvent"]) => void;
   /** Debug: force-activate a macro shock at the current tick. */
   debugForceMacroEvent: (defId: MacroEventId) => void;
   /** Debug: clear all active macro shocks without moving them to history. */
@@ -134,6 +211,22 @@ export const useGameStore = create<GameStore>()(
       set((s) => {
         s.game = next;
       });
+    },
+
+    advanceUntil: (target, maxTicks) => {
+      const g = get().game;
+      if (!g) return { ticksAdvanced: 0, stoppedOn: "dead" as AdvanceStop };
+      const res = engineAdvanceUntil(g, target, maxTicks);
+      set((s) => {
+        // Replace the whole game slice — engineAdvanceUntil returns a
+        // fully-settled snapshot covering businesses, properties,
+        // mortgages, businessLoans, ledger, events, player, macro, etc.
+        // Also drop to paused so the interval tick doesn't fire on top
+        // of the jump and surprise the player.
+        s.game = { ...res.state, clock: { ...res.state.clock, speed: 0 } };
+        s.tickIntervalMs = speedToIntervalMs(0);
+      });
+      return { ticksAdvanced: res.ticksAdvanced, stoppedOn: res.stoppedOn };
     },
 
     setSpeed: (speed) => {
@@ -232,6 +325,14 @@ export const useGameStore = create<GameStore>()(
         tick: g.clock.tick,
         seed: g.seed,
       });
+      // v0.9 — seed bankruptcy state centrally so every business-type
+      // module doesn't need to hand-populate these fields.
+      biz.status = "operating";
+      biz.insolvencyWeeks = 0;
+      // v0.10 — seed the shared sales-lever state so marketing, hours,
+      // signage/loyalty/promo knobs are wired from tick 0. Factories leave
+      // this blank and defer to the per-type lever kind.
+      biz.levers = defaultLeversForBusinessType(biz.type);
       // Loan proceeds go into business operating cash on top of its
       // default float — this is the realistic SBA flow and prevents
       // instant cash-starvation in month 1.
@@ -424,6 +525,139 @@ export const useGameStore = create<GameStore>()(
         const biz = s.game.businesses[id];
         if (!biz) return;
         biz.state = { ...biz.state, ...patch };
+      });
+    },
+
+    setBusinessMarketingChannel: (id, channel, weeklyCents) => {
+      set((s) => {
+        if (!s.game) return;
+        const biz = s.game.businesses[id];
+        if (!biz) return;
+        if (!biz.levers) {
+          biz.levers = defaultLeversForBusinessType(biz.type);
+        }
+        const clamped = Math.max(0, Math.round(weeklyCents)) as Cents;
+        biz.levers.marketingByChannel[channel] = clamped;
+      });
+    },
+
+    closeBusinessVoluntarily: (id) => {
+      const g = get().game;
+      if (!g) return { ok: false, error: "No active game" };
+      const res = engineCloseVoluntarily(g, id, g.clock.tick);
+      if (!res.ok) {
+        return { ok: false, error: res.error };
+      }
+      set((s) => {
+        // Replace the whole game slice — the engine function returns a
+        // fully-settled snapshot, and reaching in piece-by-piece through
+        // the immer draft would double-copy and miss the assorted
+        // updates (markets, properties, businessLoans, ledger, events,
+        // player's cash/credit/closedBusinesses/unsecured-debt).
+        s.game = res.state;
+      });
+      return { ok: true, proceedsCents: res.record.liquidationProceedsCents };
+    },
+
+    convertBusinessToOwned: (bizId, propertyId) => {
+      const g = get().game;
+      if (!g) return { ok: false, error: "No active game" };
+      const res = engineConvertToOwned(g, bizId, propertyId, g.clock.tick);
+      if (!res.ok || !res.state) {
+        return { ok: false, error: res.error };
+      }
+      set((s) => {
+        s.game = res.state;
+      });
+      return { ok: true };
+    },
+
+    convertBusinessToLease: (bizId) => {
+      const g = get().game;
+      if (!g) return { ok: false, error: "No active game" };
+      const res = engineConvertToLease(g, bizId, g.clock.tick);
+      if (!res.ok || !res.state) {
+        return {
+          ok: false,
+          error: res.error,
+          insufficientFunds: res.insufficientFunds,
+        };
+      }
+      set((s) => {
+        s.game = res.state;
+      });
+      return { ok: true, depositCents: res.depositCents };
+    },
+
+    sellHostedProperty: (propertyId) => {
+      const g = get().game;
+      if (!g) return { ok: false, error: "No active game" };
+      const prop = g.properties[propertyId];
+      if (!prop) return { ok: false, error: "Property not found" };
+      if (prop.ownerId !== g.player.id) {
+        return { ok: false, error: "You don't own that property." };
+      }
+
+      // Fast path: property already vacant — just sell it.
+      if (!prop.hostedBusinessId) {
+        const sellRes = get().sellProperty(propertyId);
+        return {
+          ok: sellRes.ok,
+          error: sellRes.error,
+          outcome: "vacant",
+          proceedsCents: sellRes.proceedsCents,
+        };
+      }
+
+      // Hosted — try to relocate the business to a lease first.
+      const bizId = prop.hostedBusinessId;
+      const relocation = engineConvertToLease(g, bizId, g.clock.tick);
+
+      if (relocation.ok && relocation.state) {
+        // Relocation succeeded. Apply then sell.
+        set((s) => {
+          s.game = relocation.state;
+        });
+        const sellRes = get().sellProperty(propertyId);
+        return {
+          ok: sellRes.ok,
+          error: sellRes.error,
+          outcome: "relocated",
+          proceedsCents: sellRes.proceedsCents,
+          depositCents: relocation.depositCents,
+        };
+      }
+
+      if (!relocation.insufficientFunds) {
+        // Some other error (missing prop, wrong owner, …) — surface it.
+        return { ok: false, error: relocation.error };
+      }
+
+      // Couldn't afford the deposit — voluntarily close, then sell.
+      const closeRes = engineCloseVoluntarily(g, bizId, g.clock.tick);
+      if (!closeRes.ok) {
+        return { ok: false, error: closeRes.error };
+      }
+      set((s) => {
+        s.game = closeRes.state;
+      });
+      const sellRes = get().sellProperty(propertyId);
+      return {
+        ok: sellRes.ok,
+        error: sellRes.error,
+        outcome: "closed",
+        proceedsCents: sellRes.proceedsCents,
+      };
+    },
+
+    setPauseOnEvent: (mode) => {
+      set((s) => {
+        if (!s.game) return;
+        if (!s.game.settings) {
+          s.game.settings = { pauseOnEvent: mode };
+        } else {
+          s.game.settings.pauseOnEvent = mode;
+        }
       });
     },
 

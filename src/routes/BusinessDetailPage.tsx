@@ -20,13 +20,21 @@ import { Link, Navigate, useParams } from "react-router-dom";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { StatTile } from "@/components/ui/StatTile";
+import { DistressBanner } from "@/components/game/DistressBanner";
 
 import { useGameStore } from "@/state/store";
 import { formatMoney } from "@/lib/money";
 import { createRng } from "@/lib/rng";
 import { pickName } from "@/data/names";
 
-import type { Business, LedgerEntry } from "@/types/game";
+import type {
+  Business,
+  Cents,
+  LedgerEntry,
+  Market,
+  MarketingChannel,
+  Property,
+} from "@/types/game";
 
 import type { CornerStoreState } from "@/engine/business/retail";
 import type { CafeState, CafeQualityTier } from "@/engine/business/cafe";
@@ -36,6 +44,16 @@ import type { LiquorTier, MenuProgram } from "@/engine/business/hospitality";
 import { priceAttractiveness } from "@/engine/economy/market";
 import { haloContribution } from "@/engine/economy/reputation";
 import { ECONOMY } from "@/engine/economy/constants";
+import {
+  effectiveMarketingScore,
+  leversOf,
+  totalWeeklyMarketing,
+} from "@/engine/business/leverState";
+import {
+  MARKETING_CHANNELS,
+  MARKETING_CHANNEL_IDS,
+} from "@/data/marketingChannels";
+import { getMarketDemographics } from "@/data/marketDemographics";
 import { SKU_LABELS } from "@/data/items";
 import { MENU_LABELS } from "@/data/menu";
 import { DRINK_LABELS } from "@/data/barDrinks";
@@ -55,6 +73,7 @@ export function BusinessDetailPage() {
   const { id } = useParams<{ id: string }>();
   const game = useGameStore((s) => s.game)!;
   const patchBiz = useGameStore((s) => s.patchBusinessState);
+  const closeVoluntarily = useGameStore((s) => s.closeBusinessVoluntarily);
   const [tab, setTab] = useState<TabKey>("overview");
 
   const biz = id ? game.businesses[id] : undefined;
@@ -65,6 +84,11 @@ export function BusinessDetailPage() {
   }
 
   const onPatch = (patch: Partial<Business["state"]>) => patchBiz(biz.id, patch);
+  const onCloseVoluntarily = () => {
+    // After this resolves, the biz record is gone from game.businesses
+    // and the guard above re-renders with <Navigate to="/business">.
+    closeVoluntarily(biz.id);
+  };
   const marketName = game.markets[biz.locationId]?.name ?? biz.locationId;
 
   // Corner-store has no separate inventory tab label; every type uses the same 5 tabs.
@@ -82,6 +106,8 @@ export function BusinessDetailPage() {
         </Link>
       </header>
 
+      <DistressBanner biz={biz} onCloseVoluntarily={onCloseVoluntarily} />
+
       <div>
         <h1 className="text-2xl font-bold flex items-center gap-2">
           <span>{bizIcon(biz.type)}</span>
@@ -91,6 +117,7 @@ export function BusinessDetailPage() {
           {bizLabel(biz.type)} · {marketName} · opened tick{" "}
           {biz.openedAtTick.toLocaleString()}
         </p>
+        <HostedSpaceIndicator biz={biz} />
       </div>
 
       <nav
@@ -120,7 +147,7 @@ export function BusinessDetailPage() {
       {tab === "overview" && <OverviewTab biz={biz} onPatch={onPatch} marketName={marketName} />}
       {tab === "inventory" && <InventoryTab biz={biz} onPatch={onPatch} />}
       {tab === "staff" && <StaffTab biz={biz} onPatch={onPatch} />}
-      {tab === "marketing" && <MarketingTab biz={biz} onPatch={onPatch} />}
+      {tab === "marketing" && <MarketingTab biz={biz} />}
       {tab === "finance" && <FinanceTab biz={biz} />}
     </div>
   );
@@ -158,6 +185,171 @@ function bizLabel(type: Business["type"]): string {
   }
 }
 
+/**
+ * v0.9 Failure & Flow: surface whether the business is on a player-owned
+ * property or leasing commercial space. Shown directly below the page
+ * header so the player can read their exposure at a glance without
+ * hunting through the Finance tab.
+ *
+ * Owned space → green chip + click-through to the finance real-estate
+ * rail (we don't have a dedicated /real-estate route yet).
+ * Leasing    → neutral chip with the monthly rent figure pulled from
+ * `state.rentMonthly`, which the engine charges weekly at /4.
+ */
+function HostedSpaceIndicator({ biz }: { biz: Business }) {
+  const property = useHostedProperty(biz);
+  const rentMonthly = readRentMonthly(biz);
+
+  if (property) {
+    // Owned space.
+    return (
+      <Link
+        to="/finance"
+        className="mt-2 inline-flex items-center gap-2 rounded-full border border-money/60 bg-money/10 px-3 py-1 text-xs text-money hover:bg-money/15 transition-colors"
+        title="You own the building. No rent, but property taxes + maintenance still apply. Click to view in your property rail."
+      >
+        <span aria-hidden>🏠</span>
+        <span className="font-semibold">Owned space</span>
+        <span className="text-ink-300 font-normal truncate max-w-[16rem]">
+          · {property.address}
+        </span>
+      </Link>
+    );
+  }
+
+  if (rentMonthly !== undefined && rentMonthly > 0) {
+    return (
+      <div
+        className="mt-2 inline-flex items-center gap-2 rounded-full border border-ink-700 bg-ink-900/60 px-3 py-1 text-xs text-ink-200"
+        title="Leased commercial space. Rent is pulled weekly from the business's operating cash (monthly figure shown ÷ 4 per week)."
+      >
+        <span aria-hidden>📝</span>
+        <span className="font-semibold text-ink-100">Leasing</span>
+        <span className="text-ink-300 font-normal">
+          · {formatMoney(rentMonthly, { compact: true })}/mo
+        </span>
+      </div>
+    );
+  }
+
+  // No rent line for this business type (e.g. food truck). Stay quiet.
+  return null;
+}
+
+/** Look up the hosted Property record for a business, if any. Used by
+ *  both the header indicator and the Finance-tab rent row. */
+function useHostedProperty(biz: Business): Property | undefined {
+  const property = useGameStore((s) => {
+    if (!biz.propertyId || !s.game) return undefined;
+    return s.game.properties[biz.propertyId];
+  });
+  return property;
+}
+
+/** Every storefront / hospitality / project engine carries its monthly
+ *  rent on `state.rentMonthly`. Project-based engines that don't have a
+ *  storefront (e.g. food_truck) leave it undefined. */
+function readRentMonthly(biz: Business): number | undefined {
+  const raw = (biz.state as { rentMonthly?: number }).rentMonthly;
+  return typeof raw === "number" ? raw : undefined;
+}
+
+/**
+ * v0.9 Lease → owned migration.
+ *
+ * Shown on the Finance tab when the business is currently leasing and the
+ * player owns one or more vacant properties in the same market. Wipes the
+ * monthly rent line as soon as the relocation succeeds — the engine
+ * reads `state.rentMonthly` fresh each week.
+ */
+function ConvertToOwnedCard({
+  biz,
+  onResult,
+}: {
+  biz: Business;
+  onResult: (msg: string) => void;
+}) {
+  const vacant = useGameStore((s) => {
+    if (!s.game) return [] as Property[];
+    return Object.values(s.game.properties).filter(
+      (p) =>
+        p.ownerId === s.game!.player.id &&
+        p.marketId === biz.locationId &&
+        !p.hostedBusinessId,
+    );
+  });
+  const convert = useGameStore((s) => s.convertBusinessToOwned);
+  const [selectedId, setSelectedId] = useState<string>("");
+
+  if (vacant.length === 0) {
+    return (
+      <Card
+        title="Move onto an owned property"
+        subtitle="You don't own any vacant properties in this market."
+      >
+        <p className="text-xs text-ink-400">
+          Buy a commercial property in this market from the Market page to
+          zero out this business's rent line. You'll still owe property tax
+          and maintenance each month — but those settle from your personal
+          cash, not the business.
+        </p>
+      </Card>
+    );
+  }
+
+  const chosen =
+    vacant.find((p) => p.id === selectedId) ?? vacant[0];
+
+  return (
+    <Card
+      title="Move onto an owned property"
+      subtitle={`${vacant.length} vacant ${vacant.length === 1 ? "property" : "properties"} available in this market`}
+    >
+      <p className="text-xs text-ink-400 mb-3">
+        Relocating wipes the monthly rent immediately. No cash changes
+        hands — you already own the building. Property tax and maintenance
+        still settle against your personal cash at month-end.
+      </p>
+
+      <div className="flex flex-col sm:flex-row gap-2 items-stretch sm:items-end">
+        <label className="flex-1 min-w-0">
+          <span className="block text-[11px] text-ink-400 mb-1">
+            Target property
+          </span>
+          <select
+            value={chosen.id}
+            onChange={(e) => setSelectedId(e.target.value)}
+            className="w-full rounded-lg border border-ink-700 bg-ink-900 text-ink-50 px-2 py-1.5 text-xs"
+          >
+            {vacant.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.address} · {p.class}-class · {p.sqft.toLocaleString()} sqft
+              </option>
+            ))}
+          </select>
+        </label>
+        <Button
+          size="sm"
+          variant="primary"
+          onClick={() => {
+            const res = convert(biz.id, chosen.id);
+            if (!res.ok) {
+              onResult(res.error ?? "Couldn't move this business onto that property.");
+              return;
+            }
+            onResult(
+              `${biz.name} moved onto ${chosen.address} — rent line zeroed.`,
+            );
+          }}
+          title="Move this business onto the selected owned property."
+        >
+          Move onto owned property
+        </Button>
+      </div>
+    </Card>
+  );
+}
+
 // ===== Overview tab =====
 
 function OverviewTab({
@@ -185,6 +377,8 @@ function OverviewTab({
 
   return (
     <div className="space-y-4">
+      <StaffingWarningBanner biz={biz} />
+
       <div className="grid grid-cols-2 gap-2">
         <StatTile
           label="Weekly revenue"
@@ -230,6 +424,8 @@ function OverviewTab({
         />
       </div>
 
+      <TrafficConversionCard biz={biz} />
+
       {biz.type === "cafe" && (
         <CafeQualityTierCard biz={biz} onPatch={onPatch} />
       )}
@@ -242,6 +438,211 @@ function OverviewTab({
         <p className="text-xs text-ink-400">{bizBlurb(biz.type)}</p>
       </Card>
     </div>
+  );
+}
+
+/**
+ * v0.8.1: Traffic & conversion surface.
+ *
+ * Storefront engines (retail.ts, retailBase.ts — 9 business types as of
+ * v0.8.1) report weekly visitors, units sold, and conversion in their
+ * KPIs. For every other type these come back undefined and we render a
+ * "coming in v0.9" placeholder instead of a broken card. The current-hour
+ * foot-traffic number lives on `derived.footTraffic` and is populated by
+ * every storefront engine.
+ */
+/**
+ * v0.8.1: Staffing warning banner.
+ *
+ * Every storefront/hospitality engine short-circuits to zero revenue when
+ * `staff.length === 0`. Players without a heads-up have historically
+ * bought a store, walked away, and come back wondering why revenue is
+ * flat. This surfaces that gap.
+ *
+ * Tiers:
+ *   CRIT  — any roster section is empty → 100% sales loss vs reference.
+ *   WARN  — roster filled but service quality < 0.25, meaning the
+ *           staffing term of the conversion multiplier is pinned near
+ *           the 0.6× floor instead of the ~1.05× "typical" crew.
+ *
+ * Reference service is 0.5 (skill ~70 × morale ~72 = 0.504), which maps
+ * to a 1.1× multiplier. We report the gap between current and reference
+ * as an approximate "X% of potential sales" number so the player can
+ * tell whether hiring is priority #1 or just a tuning nudge.
+ */
+function StaffingWarningBanner({ biz }: { biz: Business }) {
+  const roster = buildRoster(biz);
+
+  // Type doesn't use a staff roster in the game (e.g. real estate firm
+  // before v0.9) — no warning to surface.
+  if (roster.sections.length === 0) return null;
+
+  const emptySections = roster.sections.filter((s) => s.people.length === 0);
+  if (emptySections.length > 0) {
+    const labels = emptySections.map((s) => s.label.toLowerCase()).join(" or ");
+    return (
+      <div
+        className="rounded-xl border-2 border-loss/70 bg-loss/10 px-4 py-3 flex items-start gap-3"
+        role="alert"
+      >
+        <span className="mt-1.5 h-2 w-2 rounded-full shrink-0 bg-loss" />
+        <div className="min-w-0 flex-1">
+          <div className="text-sm font-semibold text-loss">
+            No {labels} on shift — store generates $0 in sales
+          </div>
+          <p className="text-xs text-ink-300 mt-0.5 leading-snug">
+            The sim skips revenue generation entirely when a required
+            roster is empty. Hire at least one person in the{" "}
+            <span className="font-semibold text-ink-100">Staff</span> tab
+            to turn the lights back on.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  // All sections have at least one person — check service floor.
+  const REFERENCE_SERVICE = 0.5; // skill 70 × morale 72 = 0.504
+  const referenceMult = 0.6 + REFERENCE_SERVICE; // 1.1
+  const worstSection = roster.sections.reduce<
+    { section: (typeof roster.sections)[number]; service: number } | null
+  >((worst, s) => {
+    const service = computeServiceQuality(s.people);
+    if (!worst || service < worst.service) return { section: s, service };
+    return worst;
+  }, null);
+
+  if (!worstSection) return null;
+
+  const currentMult = 0.6 + worstSection.service;
+  const salesGapPct = Math.max(
+    0,
+    ((referenceMult - currentMult) / referenceMult) * 100,
+  );
+
+  // Only bother the player when the gap is meaningful (≥ 10%).
+  if (salesGapPct < 10) return null;
+
+  const tone =
+    salesGapPct >= 25
+      ? "border-loss/70 bg-loss/10 text-loss"
+      : "border-amber-700/60 bg-amber-950/40 text-amber-200";
+  const dotTone = salesGapPct >= 25 ? "bg-loss" : "bg-amber-400";
+  const headline =
+    salesGapPct >= 25
+      ? "Severely understaffed — sales well below potential"
+      : "Understaffed — some sales slipping through the cracks";
+
+  return (
+    <div
+      className={`rounded-xl border px-4 py-3 flex items-start gap-3 ${tone}`}
+      role="alert"
+    >
+      <span className={`mt-1.5 h-2 w-2 rounded-full shrink-0 ${dotTone}`} />
+      <div className="min-w-0 flex-1">
+        <div className="text-sm font-semibold">{headline}</div>
+        <p className="text-xs text-ink-300 mt-0.5 leading-snug">
+          {worstSection.section.label} service is{" "}
+          <span className="font-mono tabular-nums">
+            {(worstSection.service * 100).toFixed(0)}%
+          </span>{" "}
+          — roughly{" "}
+          <span className="font-mono tabular-nums">
+            {salesGapPct.toFixed(0)}%
+          </span>{" "}
+          below a typical crew's conversion multiplier. Hire more people,
+          raise wages above band to lift morale, or avoid layoffs (each
+          fire pings the whole crew −8 morale).
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function TrafficConversionCard({ biz }: { biz: Business }) {
+  const hasInstrumented =
+    biz.kpis.weeklyVisitors !== undefined ||
+    biz.kpis.weeklyUnitsSold !== undefined ||
+    biz.kpis.weeklyConversion !== undefined;
+
+  if (!hasInstrumented) {
+    return (
+      <Card
+        title="Traffic & conversion"
+        subtitle="Visitors, units sold, and conversion rate"
+      >
+        <div className="text-xs text-ink-500">
+          Traffic instrumentation for this business type lands in v0.9
+          (Marketing & Levers update). For now, use weekly revenue and CSAT
+          as proxies.
+        </div>
+      </Card>
+    );
+  }
+
+  const visitors = biz.kpis.weeklyVisitors ?? 0;
+  const unitsSold = biz.kpis.weeklyUnitsSold ?? 0;
+  const conversion = biz.kpis.weeklyConversion ?? 0;
+  const revPerVisitor =
+    visitors > 0 ? biz.kpis.weeklyRevenue / visitors : 0;
+  const unitsPerVisitor = visitors > 0 ? unitsSold / visitors : 0;
+  const footTraffic = biz.derived.footTraffic;
+
+  return (
+    <Card
+      title="Traffic & conversion"
+      subtitle="How many walked in, and how many bought."
+    >
+      <div className="grid grid-cols-2 gap-2">
+        <StatTile
+          label="Foot traffic"
+          value={footTraffic.toFixed(1)}
+          hint="Current-hour visitors per hour (market capture)"
+        />
+        <StatTile
+          label="Weekly visitors"
+          value={visitors.toLocaleString()}
+          hint="Estimated people who entered this week"
+        />
+        <StatTile
+          label="Conversion rate"
+          value={`${(conversion * 100).toFixed(1)}%`}
+          hint={
+            conversion >= 0.4
+              ? "Strong — price & service are working"
+              : conversion >= 0.25
+                ? "OK — room to improve with better pricing/staff"
+                : "Weak — too few visitors are buying"
+          }
+        />
+        <StatTile
+          label="Units sold"
+          value={unitsSold.toLocaleString()}
+          hint={`${unitsPerVisitor.toFixed(2)} units per visitor`}
+        />
+        <StatTile
+          label="Revenue / visitor"
+          value={formatMoney(Math.round(revPerVisitor))}
+          hint="Average spend per person who walked in"
+        />
+        <StatTile
+          label="Avg ticket"
+          value={
+            unitsSold > 0
+              ? formatMoney(Math.round(biz.kpis.weeklyRevenue / unitsSold))
+              : "—"
+          }
+          hint="Revenue per unit sold"
+        />
+      </div>
+      <p className="mt-3 text-xs text-ink-500">
+        Foot traffic is driven by the market (population × desirability ×
+        macro wallet). Conversion is driven by your pricing, service quality
+        (staff), and marketing. Units-per-visitor rises when you have more
+        attractive SKUs in stock. Weekly numbers update each Sunday
+        midnight.
+      </p>
+    </Card>
   );
 }
 
@@ -268,6 +669,15 @@ const CAFE_TIER_LABELS: Record<CafeQualityTier, string> = {
   premium: "Premium",
 };
 
+/** v0.8.1: per-tier explainer strings shown below the tier buttons so
+ *  players can see what each tier costs and buys them. Numbers are kept in
+ *  sync with CAFE_TIER_PROFILES in cafe.ts. */
+const CAFE_TIER_EXPLAINERS: Record<CafeQualityTier, string> = {
+  basic:   "Basic   · −20% price, −25% cost, CSAT caps at 75. Best when foot traffic is thin and margin matters more than ceiling.",
+  craft:   "Craft   · Reference tier. CSAT caps at 88. Sensible default if you're not sure.",
+  premium: "Premium · +45% price, +35% cost, +25% wages. CSAT caps at 95, but you need the ambience (floor 70%) and crew to back it up.",
+};
+
 function CafeQualityTierCard({
   biz,
   onPatch,
@@ -288,6 +698,7 @@ function CafeQualityTierCard({
             size="sm"
             variant={st.qualityTier === t ? "primary" : "secondary"}
             onClick={() => onPatch({ qualityTier: t })}
+            title={CAFE_TIER_EXPLAINERS[t]}
           >
             {CAFE_TIER_LABELS[t]}
           </Button>
@@ -298,11 +709,14 @@ function CafeQualityTierCard({
           onClick={() =>
             onPatch({ ambience: Math.min(1, (st.ambience ?? 0) + 0.2) })
           }
-          title="Capex pulse: +20% ambience"
+          title="Capex pulse: +20% ambience. Ambience floors under premium are high — you'll bleed CSAT until the room matches the tier."
         >
           Refresh ambience ({Math.round(st.ambience * 100)}%)
         </Button>
       </div>
+      <p className="mt-3 text-[11px] leading-snug text-ink-500">
+        {CAFE_TIER_EXPLAINERS[st.qualityTier]}
+      </p>
     </Card>
   );
 }
@@ -311,6 +725,13 @@ const LIQUOR_LABELS: Record<LiquorTier, string> = {
   well: "Well",
   call: "Call",
   top_shelf: "Top Shelf",
+};
+
+/** v0.8.1: per-tier explainer for the bar shelf. Synced with LIQUOR_TIER. */
+const LIQUOR_EXPLAINERS: Record<LiquorTier, string> = {
+  well:      "Well       · −15% price, −25% cost, CSAT caps at 72, no tip lift. Cheapest way to keep the doors open.",
+  call:      "Call       · Reference tier. CSAT caps at 85, +2% tip pool.",
+  top_shelf: "Top Shelf  · +55% price, +45% cost, CSAT caps at 94, +5% tip pool. Pulls higher-spend patrons when ambience keeps up.",
 };
 
 function BarTierCard({
@@ -329,23 +750,27 @@ function BarTierCard({
       <div className="text-[11px] uppercase tracking-wide text-ink-400 mb-1">
         Liquor shelf
       </div>
-      <div className="flex flex-wrap gap-2 mb-3">
+      <div className="flex flex-wrap gap-2 mb-1">
         {(["well", "call", "top_shelf"] as LiquorTier[]).map((t) => (
           <Button
             key={t}
             size="sm"
             variant={st.liquorTier === t ? "primary" : "secondary"}
             onClick={() => onPatch({ liquorTier: t })}
+            title={LIQUOR_EXPLAINERS[t]}
           >
             {LIQUOR_LABELS[t]}
           </Button>
         ))}
       </div>
+      <p className="text-[11px] leading-snug text-ink-500 mb-3">
+        {LIQUOR_EXPLAINERS[st.liquorTier]}
+      </p>
 
       <div className="text-[11px] uppercase tracking-wide text-ink-400 mb-1">
         Happy hour {st.happyHour.enabled ? "· ON" : "· off"}
       </div>
-      <div className="flex flex-wrap gap-2 mb-3">
+      <div className="flex flex-wrap gap-2 mb-2">
         <Button
           size="sm"
           variant={st.happyHour.enabled ? "primary" : "secondary"}
@@ -354,6 +779,7 @@ function BarTierCard({
               happyHour: { ...st.happyHour, enabled: !st.happyHour.enabled },
             })
           }
+          title="Discounts eligible drinks during the window — pulls in more covers but eats margin per drink. Net impact shows up in weekly P&L."
         >
           Toggle {st.happyHour.startHour}:00–{st.happyHour.endHour}:00
         </Button>
@@ -363,7 +789,7 @@ function BarTierCard({
           onClick={() =>
             onPatch({ idCheckDiligence: Math.min(1, st.idCheckDiligence + 0.1) })
           }
-          title={`ID-check diligence ${(st.idCheckDiligence * 100).toFixed(0)}%`}
+          title="Higher ID-check diligence reduces fine risk from underage patrons at the cost of slightly slower service throughput. +10% per click."
         >
           + ID checks ({Math.round(st.idCheckDiligence * 100)}%)
         </Button>
@@ -373,10 +799,15 @@ function BarTierCard({
           onClick={() =>
             onPatch({ ambience: Math.min(1, (st.ambience ?? 0) + 0.2) })
           }
+          title="Capex pulse: +20% ambience. Bars need ambience to hold CSAT at higher shelf tiers."
         >
           Refresh ambience ({Math.round(st.ambience * 100)}%)
         </Button>
       </div>
+      <p className="text-[11px] leading-snug text-ink-500">
+        Happy hour trades margin for volume. ID checks reduce fine risk but
+        slow service. Ambience decays; pulse it when the shelf is top tier.
+      </p>
     </Card>
   );
 }
@@ -385,6 +816,13 @@ const PROGRAM_LABELS: Record<MenuProgram, string> = {
   diner: "Diner",
   bistro: "Bistro",
   chef_driven: "Chef-Driven",
+};
+
+/** v0.8.1: per-program explainer for the restaurant menu. Synced with MENU_PROGRAM. */
+const PROGRAM_EXPLAINERS: Record<MenuProgram, string> = {
+  diner:       "Diner       · −10% price, −20% cost, CSAT caps at 75. Fast 45-min turns move covers — grind economics.",
+  bistro:      "Bistro      · +10% price, reference cost, CSAT caps at 88, +3% tip pool. Slower 70-min turns but higher ticket.",
+  chef_driven: "Chef-Driven · +60% price, +40% cost, CSAT caps at 95, +6% tip pool. Longest turn (95 min) — needs craft, ambience, and reservations to land.",
 };
 
 function RestaurantProgramCard({
@@ -400,23 +838,27 @@ function RestaurantProgramCard({
       <div className="text-[11px] uppercase tracking-wide text-ink-400 mb-1">
         Program
       </div>
-      <div className="flex flex-wrap gap-2 mb-3">
+      <div className="flex flex-wrap gap-2 mb-1">
         {(["diner", "bistro", "chef_driven"] as MenuProgram[]).map((t) => (
           <Button
             key={t}
             size="sm"
             variant={st.program === t ? "primary" : "secondary"}
             onClick={() => onPatch({ program: t })}
+            title={PROGRAM_EXPLAINERS[t]}
           >
             {PROGRAM_LABELS[t]}
           </Button>
         ))}
       </div>
+      <p className="text-[11px] leading-snug text-ink-500 mb-3">
+        {PROGRAM_EXPLAINERS[st.program]}
+      </p>
 
       <div className="text-[11px] uppercase tracking-wide text-ink-400 mb-1">
         Reservation density · {Math.round(st.reservationDensity * 100)}%
       </div>
-      <div className="flex flex-wrap gap-2 mb-3">
+      <div className="flex flex-wrap gap-2 mb-2">
         <Button
           size="sm"
           variant="secondary"
@@ -425,6 +867,7 @@ function RestaurantProgramCard({
               reservationDensity: Math.max(0, st.reservationDensity - 0.1),
             })
           }
+          title="Lower reservation density = more walk-in capacity, but revenue swings more with traffic."
         >
           − 10%
         </Button>
@@ -436,6 +879,7 @@ function RestaurantProgramCard({
               reservationDensity: Math.min(1, st.reservationDensity + 0.1),
             })
           }
+          title="Higher density smooths revenue by locking in covers, but caps upside on peak nights."
         >
           + 10%
         </Button>
@@ -443,7 +887,7 @@ function RestaurantProgramCard({
           size="sm"
           variant="secondary"
           onClick={() => onPatch({ ticksSinceMenuRefresh: 0 })}
-          title="Seasonal refresh resets staleness timer."
+          title="Seasonal refresh resets the staleness timer — menus quietly lose CSAT over time if left alone."
         >
           Refresh menu
         </Button>
@@ -453,10 +897,15 @@ function RestaurantProgramCard({
           onClick={() =>
             onPatch({ ambience: Math.min(1, (st.ambience ?? 0) + 0.2) })
           }
+          title="Capex pulse: +20% ambience. Chef-driven rooms need ambience to justify the price."
         >
           Refresh ambience ({Math.round(st.ambience * 100)}%)
         </Button>
       </div>
+      <p className="text-[11px] leading-snug text-ink-500">
+        Reservations trade peak upside for predictable covers. Menu refresh is
+        free but easy to forget — stale menus quietly eat CSAT.
+      </p>
     </Card>
   );
 }
@@ -865,6 +1314,50 @@ function avg(xs: number[], fallback: number): number {
   return Math.round(xs.reduce((a, b) => a + b, 0) / xs.length);
 }
 
+/**
+ * v0.8.1: Compute the 0..1 service-quality score for a roster section.
+ *
+ * Mirrors the formula inside every retail/hospitality engine:
+ *   avg(skill * morale) / 10000
+ * It's the term conversion is multiplied by in the sim — displayed here
+ * so the player knows whether staffing is helping or hurting sales.
+ */
+function computeServiceQuality(people: RosterStaff[]): number {
+  if (people.length === 0) return 0;
+  const sum = people.reduce(
+    (a, p) => a + (p.aptitude * p.morale) / 10000,
+    0,
+  );
+  return sum / people.length;
+}
+
+/**
+ * v0.8.1: What service quality would be if we added one more staff member
+ * with the given aptitude (defaults to morale 72, same as the hire helper).
+ */
+function previewServiceAfterHire(
+  current: RosterStaff[],
+  newAptitude: number,
+  newMorale = 72,
+): number {
+  const next = [
+    ...current.map((p) => ({
+      skillMorale: (p.aptitude * p.morale) / 10000,
+    })),
+    { skillMorale: (newAptitude * newMorale) / 10000 },
+  ];
+  return next.reduce((a, p) => a + p.skillMorale, 0) / next.length;
+}
+
+/**
+ * Convert a service-quality score (0..1) into the conversion-multiplier
+ * term the sim applies — `(0.6 + service)`. Rendered as a tooltip hint so
+ * the player can see how much hiring moves the needle.
+ */
+function serviceToConvMultiplier(service: number): number {
+  return 0.6 + service;
+}
+
 /** Synthetic applicant from the hiring pool. */
 interface Applicant {
   id: string;
@@ -927,6 +1420,13 @@ function StaffTab({
       </Card>
     );
   }
+
+  // v0.8.1: Service-quality is the staffing term of the conversion multiplier.
+  // Sim applies `(0.6 + service)` — so an empty roster gives 0.6×, a
+  // fully-rested elite crew gives ~1.6×. Surfaced here so players can see
+  // whether a hire actually moves the needle.
+  const currentService = computeServiceQuality(activeSection.people);
+  const currentMult = serviceToConvMultiplier(currentService);
 
   const hire = (a: Applicant) => {
     const hiredRecord = buildStaffRecord(biz, activeSection, a);
@@ -1011,7 +1511,7 @@ function StaffTab({
 
       <Card
         title={`${activeSection.label} (${activeSection.people.length})`}
-        subtitle={`Band ${formatMoney(band)}/hr · above-band lifts morale, layoffs ding it`}
+        subtitle={`Band ${formatMoney(band)}/hr · Service ${(currentService * 100).toFixed(0)}% → ×${currentMult.toFixed(2)} conversion · Above-band lifts morale, layoffs ding it`}
       >
         {activeSection.people.length === 0 ? (
           <p className="text-xs text-ink-400">
@@ -1088,6 +1588,21 @@ function StaffTab({
                 : ratio < 0.95
                   ? "text-money"
                   : "text-ink-200";
+            // v0.8.1: preview what hiring this applicant would do to the
+            // staffing-derived conversion multiplier. New hires start at
+            // morale 72 (matches buildStaffRecord).
+            const afterService = previewServiceAfterHire(
+              activeSection.people,
+              a.aptitude,
+            );
+            const afterMult = serviceToConvMultiplier(afterService);
+            const convDeltaPct = ((afterMult - currentMult) / Math.max(0.0001, currentMult)) * 100;
+            const deltaTone =
+              convDeltaPct >= 1
+                ? "text-money"
+                : convDeltaPct <= -1
+                  ? "text-loss"
+                  : "text-ink-500";
             return (
               <li key={a.id} className="py-2 flex items-center justify-between gap-3">
                 <div className="min-w-0">
@@ -1102,6 +1617,16 @@ function StaffTab({
                       ({((ratio - 1) * 100 >= 0 ? "+" : "") +
                         ((ratio - 1) * 100).toFixed(0)}%
                       {" vs band"})
+                    </span>
+                  </div>
+                  <div className="text-[11px] text-ink-500 mt-0.5">
+                    Hiring →{" "}
+                    <span className="text-ink-300">
+                      Service {(currentService * 100).toFixed(0)}% → {(afterService * 100).toFixed(0)}%
+                    </span>{" "}
+                    <span className={deltaTone}>
+                      ({convDeltaPct >= 0 ? "+" : ""}
+                      {convDeltaPct.toFixed(1)}% conversion)
                     </span>
                   </div>
                 </div>
@@ -1138,125 +1663,330 @@ function buildStaffRecord(
   return { ...base, craft: app.aptitude };
 }
 
-// ===== Marketing tab =====
+// ===== Marketing tab (v0.10 channelized) =====
 
 /**
- * Marketing budget slider. Writes `marketingWeekly` on the biz state. The
- * live `marketingScore` is what the sim actually reads for the traffic
- * multiplier; score decays 0.6× per week when no fresh spend lands.
+ * Marketing tab — v0.10 "Marketing & Levers".
+ *
+ * Six per-channel sliders (radio / social / TV / magazines / OOH / email),
+ * each with a demographic-fit badge for the current market and a live
+ * decayed-score bar. The header card surfaces the market-weighted
+ * effective score (what the engine actually uses in conversion &
+ * pipeline formulas) and total weekly spend.
+ *
+ * Writes land via the `setBusinessMarketingChannel` store action, which
+ * lazily seeds `LeverState` if the business predates v0.10. Engine tick
+ * picks up the new spend immediately on the next hour.
  */
-function MarketingTab({
-  biz,
-  onPatch,
-}: {
-  biz: Business;
-  onPatch: (patch: Partial<Business["state"]>) => void;
-}) {
-  const st = biz.state as unknown as {
-    marketingWeekly?: number;
-    marketingScore?: number;
-  };
-  const weekly = st.marketingWeekly ?? 0;
-  const score = st.marketingScore ?? 0;
+function MarketingTab({ biz }: { biz: Business }) {
+  const market = useGameStore(
+    (s) => s.game!.markets[biz.locationId],
+  ) as Market | undefined;
+  const setChannel = useGameStore((s) => s.setBusinessMarketingChannel);
 
-  // Budget range: $0 .. $2,000/week in $50 steps.
-  const min = 0;
-  const max = 200_000;
-  const step = 5_000;
+  const levers = leversOf(biz);
+  const totalWeekly = totalWeeklyMarketing(levers);
+  const effectiveScore = market
+    ? effectiveMarketingScore(levers, market)
+    : 0;
 
-  // Simulate decay curve for 8 weeks with current weekly as the "fresh spend"
-  // influx. score_{t+1} = score_t * 0.6 + min(1, spend/$400) * 0.4  (matches
-  // retail.ts onWeek math; cafe/bar/restaurant use similar shapes).
-  const decayRef = biz.type === "corner_store" ? 40_000 : 50_000; // $400 / $500
-  const decayMul = biz.type === "corner_store" ? 0.6 : 0.65;
-  const steadyInflux = Math.min(1, weekly / Math.max(1, decayRef));
-  const curve: number[] = [];
-  let s = score;
-  for (let i = 0; i < 8; i++) {
-    s = s * decayMul + steadyInflux * (1 - decayMul);
-    curve.push(s);
-  }
-
-  const bars = curve.map((v, i) => ({
-    i,
-    pct: Math.max(4, Math.round(v * 100)), // minimum bar height so 0 is still visible
-  }));
+  const demo = market
+    ? (market.demographics ?? getMarketDemographics(market.id))
+    : undefined;
 
   return (
     <div className="space-y-4">
       <Card
         title="Weekly marketing budget"
-        subtitle="Fresh spend refreshes marketing score; no spend decays it."
+        subtitle={
+          market
+            ? `Effective reach for ${market.name} — weighted across all channels`
+            : "Channelized spend (v0.10)"
+        }
       >
-        <div className="flex items-end justify-between mb-1">
-          <div className="text-3xl font-bold text-ink-50 font-mono tabular-nums">
-            {formatMoney(weekly, { compact: true })}
-          </div>
-          <div className="text-xs text-ink-400">
-            Score <span className="text-ink-100 font-mono">{(score * 100).toFixed(0)}%</span>
-          </div>
-        </div>
-        <input
-          type="range"
-          min={min}
-          max={max}
-          step={step}
-          value={weekly}
-          onChange={(e) => onPatch({ marketingWeekly: Number(e.target.value) } as Partial<Business["state"]>)}
-          className="w-full accent-amber-400"
-          aria-label="Weekly marketing budget"
-        />
-        <div className="flex justify-between text-[11px] text-ink-500 mt-1">
-          <span>$0</span>
-          <span>$500</span>
-          <span>$1,000</span>
-          <span>$1,500</span>
-          <span>$2,000</span>
-        </div>
-        <div className="flex flex-wrap gap-2 mt-3">
-          {[0, 10_000, 25_000, 50_000, 100_000].map((v) => (
-            <Button
-              key={v}
-              size="xs"
-              variant={weekly === v ? "primary" : "secondary"}
-              onClick={() => onPatch({ marketingWeekly: v } as Partial<Business["state"]>)}
-            >
-              {v === 0 ? "Off" : formatMoney(v)}
-            </Button>
-          ))}
-        </div>
-      </Card>
-
-      <Card
-        title="Projected decay curve"
-        subtitle="8-week forecast at current budget"
-      >
-        <div className="flex items-end gap-1 h-24">
-          {bars.map((b) => (
-            <div key={b.i} className="flex-1 flex flex-col items-center justify-end">
-              <div
-                className="w-full bg-amber-500/70 rounded-t"
-                style={{ height: `${b.pct}%` }}
-                title={`Week ${b.i + 1}: ${b.pct}%`}
-              />
+        <div className="flex items-end justify-between mb-2">
+          <div>
+            <div className="text-[11px] text-ink-400 uppercase tracking-wide">
+              Total weekly spend
             </div>
-          ))}
+            <div className="text-3xl font-bold text-ink-50 font-mono tabular-nums">
+              {formatMoney(totalWeekly, { compact: true })}
+            </div>
+          </div>
+          <div className="text-right">
+            <div className="text-[11px] text-ink-400 uppercase tracking-wide">
+              Effective reach
+            </div>
+            <div className="text-2xl font-bold text-ink-50 font-mono tabular-nums">
+              {(effectiveScore * 100).toFixed(0)}%
+            </div>
+          </div>
         </div>
-        <div className="flex justify-between text-[11px] text-ink-500 mt-1">
-          <span>+1w</span>
-          <span>+4w</span>
-          <span>+8w</span>
-        </div>
-        <p className="text-xs text-ink-400 mt-3">
-          With a steady weekly budget of {formatMoney(weekly, { compact: true })},
-          marketing score settles near{" "}
-          <span className="font-mono text-ink-100">
-            {Math.round((bars.at(-1)?.pct ?? 0))}%
-          </span>
-          . Going dark on marketing cuts it by ~
-          {Math.round((1 - decayMul) * 100)}% every week.
+        <ScoreBar value={effectiveScore} tone="accent" />
+        <p className="text-[11px] text-ink-400 mt-2 leading-relaxed">
+          Each channel reaches a different age / income profile. Effective
+          reach is the best-matched channel's decayed score, demographically
+          weighted against this market. Stop spending and scores decay toward
+          zero — fast for email, slower for print/OOH.
         </p>
       </Card>
+
+      {demo && (
+        <Card
+          title="Market audience"
+          subtitle={market!.name}
+        >
+          <div className="grid grid-cols-2 gap-2 text-xs">
+            <DemoStat
+              label="Age skew"
+              value={demo.ageSkew}
+              lowLabel="young"
+              highLabel="older"
+            />
+            <DemoStat
+              label="Income skew"
+              value={demo.incomeSkew}
+              lowLabel="price-led"
+              highLabel="affluent"
+            />
+          </div>
+          <div className="mt-2 text-[11px] text-ink-400">
+            Median age{" "}
+            <span className="text-ink-100 font-mono">
+              {Math.round(demo.medianAge)}
+            </span>{" "}
+            · median HH income{" "}
+            <span className="text-ink-100 font-mono">
+              {formatMoney(demo.medianIncome, { compact: true })}
+            </span>
+          </div>
+        </Card>
+      )}
+
+      <Card
+        title="Channels"
+        subtitle="Tune weekly spend per channel"
+      >
+        <div className="flex flex-col gap-3">
+          {MARKETING_CHANNEL_IDS.map((ch) => (
+            <MarketingChannelRow
+              key={ch}
+              channel={ch}
+              weeklySpend={levers.marketingByChannel[ch]}
+              score={levers.marketingScoreByChannel[ch]}
+              demo={demo}
+              onChange={(next) => setChannel(biz.id, ch, next)}
+            />
+          ))}
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+// ---------- Marketing tab subcomponents ----------
+
+function ScoreBar({
+  value,
+  tone = "accent",
+}: {
+  value: number; // 0..1
+  tone?: "accent" | "money" | "ink";
+}) {
+  const clamped = Math.max(0, Math.min(1, value));
+  const toneClass =
+    tone === "money"
+      ? "bg-money"
+      : tone === "ink"
+        ? "bg-ink-500"
+        : "bg-accent";
+  return (
+    <div className="h-1.5 w-full rounded-full bg-ink-800 overflow-hidden">
+      <div
+        className={`h-full rounded-full ${toneClass} transition-[width]`}
+        style={{ width: `${clamped * 100}%` }}
+      />
+    </div>
+  );
+}
+
+function DemoStat({
+  label,
+  value, // -1..+1
+  lowLabel,
+  highLabel,
+}: {
+  label: string;
+  value: number;
+  lowLabel: string;
+  highLabel: string;
+}) {
+  const pct = Math.max(0, Math.min(1, (value + 1) / 2));
+  return (
+    <div className="rounded-lg border border-ink-800 bg-ink-900/40 px-3 py-2">
+      <div className="flex items-center justify-between text-[11px] text-ink-400">
+        <span>{label}</span>
+        <span className="font-mono text-ink-200">{value.toFixed(2)}</span>
+      </div>
+      <div className="mt-1 relative h-1.5 w-full rounded-full bg-ink-800 overflow-hidden">
+        <div
+          className="absolute top-0 h-full w-0.5 bg-accent"
+          style={{ left: `${pct * 100}%` }}
+        />
+      </div>
+      <div className="mt-1 flex items-center justify-between text-[10px] text-ink-500">
+        <span>{lowLabel}</span>
+        <span>{highLabel}</span>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Per-channel slider row. Shows:
+ *   · icon + channel name + fit badge for the active market
+ *   · weekly-spend slider (0..2× saturation, rounded to $10)
+ *   · current decayed score bar
+ *   · helper text linking spend level to saturation
+ */
+function MarketingChannelRow({
+  channel,
+  weeklySpend,
+  score,
+  demo,
+  onChange,
+}: {
+  channel: MarketingChannel;
+  weeklySpend: Cents;
+  score: number;
+  demo:
+    | { ageSkew: number; incomeSkew: number; medianAge: number; medianIncome: Cents }
+    | undefined;
+  onChange: (nextCents: Cents) => void;
+}) {
+  const profile = MARKETING_CHANNELS[channel];
+  const saturation = profile.saturationCentsPerWeek;
+  const max = saturation * 2; // slider ceiling
+  const step = Math.max(1000, Math.round(saturation / 50)); // ≥ $10 steps
+  const ratio = saturation > 0 ? Math.min(1, weeklySpend / saturation) : 0;
+  const activelySpending = weeklySpend >= profile.minWeeklyCents;
+
+  // Demographic fit for the current market, 0..1. Matches the engine's
+  // weighting in `effectiveMarketingScore` so the UI hint is consistent
+  // with what the tick actually credits.
+  const fit = demo
+    ? 0.5 +
+      (1 - Math.abs(profile.ageReach - demo.ageSkew) / 2) * 0.25 +
+      (1 - Math.abs(profile.incomeReach - demo.incomeSkew) / 2) * 0.25
+    : 0.5;
+  const fitLabel =
+    fit >= 0.9
+      ? "Great fit"
+      : fit >= 0.8
+        ? "Good fit"
+        : fit >= 0.65
+          ? "OK fit"
+          : "Poor fit";
+  const fitTone =
+    fit >= 0.9
+      ? "bg-money/20 text-money border-money/40"
+      : fit >= 0.8
+        ? "bg-accent/20 text-accent border-accent/40"
+        : fit >= 0.65
+          ? "bg-ink-700 text-ink-200 border-ink-600"
+          : "bg-loss/15 text-loss border-loss/40";
+
+  return (
+    <div className="rounded-xl border border-ink-800 bg-ink-900/40 p-3">
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <div className="text-sm text-ink-50 flex items-center gap-2">
+            <span>{profile.icon}</span>
+            <span className="font-medium">{profile.displayName}</span>
+            <span
+              className={`text-[10px] px-1.5 py-0.5 rounded border ${fitTone}`}
+              title={`Demographic match vs market: ${(fit * 100).toFixed(0)}%`}
+            >
+              {fitLabel}
+            </span>
+          </div>
+          <div className="text-[11px] text-ink-400 mt-0.5 leading-snug">
+            {profile.description}
+          </div>
+        </div>
+        <div className="text-right font-mono tabular-nums text-sm text-ink-50 shrink-0">
+          {formatMoney(weeklySpend, { compact: true })}
+          <div className="text-[10px] text-ink-400 font-mono">
+            / wk
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-2 flex items-center gap-2">
+        <input
+          type="range"
+          min={0}
+          max={max}
+          step={step}
+          value={weeklySpend}
+          onChange={(e) => onChange(Number(e.target.value) as Cents)}
+          className="flex-1 accent-amber-400"
+          aria-label={`${profile.displayName} weekly spend`}
+        />
+        <button
+          className="text-[11px] text-ink-400 hover:text-ink-100 underline"
+          onClick={() => onChange(0 as Cents)}
+          type="button"
+        >
+          Zero
+        </button>
+      </div>
+
+      <div className="mt-2 flex items-center justify-between text-[10px] text-ink-500">
+        <span>$0</span>
+        <span>
+          Min{" "}
+          <span className="text-ink-300 font-mono">
+            {formatMoney(profile.minWeeklyCents, { compact: true })}
+          </span>
+          {" · "}Sat{" "}
+          <span className="text-ink-300 font-mono">
+            {formatMoney(saturation, { compact: true })}
+          </span>
+        </span>
+        <span>{formatMoney(max, { compact: true })}</span>
+      </div>
+
+      <div className="mt-3 grid grid-cols-3 gap-2 text-[11px]">
+        <div>
+          <div className="text-ink-400">Saturation</div>
+          <div className="text-ink-100 font-mono">
+            {(ratio * 100).toFixed(0)}%
+          </div>
+        </div>
+        <div>
+          <div className="text-ink-400">Reach score</div>
+          <div className="text-ink-100 font-mono">
+            {(score * 100).toFixed(0)}%
+          </div>
+        </div>
+        <div>
+          <div className="text-ink-400">Below minimum</div>
+          <div
+            className={
+              activelySpending ? "text-money font-mono" : "text-loss font-mono"
+            }
+          >
+            {activelySpending ? "Active" : "Below min"}
+          </div>
+        </div>
+      </div>
+      <div className="mt-2">
+        <ScoreBar
+          value={score}
+          tone={score >= 0.4 ? "money" : score >= 0.15 ? "accent" : "ink"}
+        />
+      </div>
     </div>
   );
 }
@@ -1265,6 +1995,8 @@ function MarketingTab({
 
 function FinanceTab({ biz }: { biz: Business }) {
   const game = useGameStore((s) => s.game)!;
+  const hostedProperty = useHostedProperty(biz);
+  const [banner, setBanner] = useState<string | undefined>();
   const ledger: LedgerEntry[] = useMemo(
     () =>
       game.ledger
@@ -1284,8 +2016,21 @@ function FinanceTab({ biz }: { biz: Business }) {
       ? (biz.kpis.weeklyProfit / biz.kpis.weeklyRevenue) * 100
       : 0;
 
+  const rentMonthly = readRentMonthly(biz);
+  const rentWeeklyDraw =
+    rentMonthly !== undefined ? Math.round(rentMonthly / 4) : undefined;
+
   return (
     <div className="space-y-4">
+      {banner && (
+        <div
+          className="rounded-xl border border-ink-700 bg-ink-900/60 text-sm text-ink-50 px-3 py-2"
+          role="status"
+        >
+          {banner}
+        </div>
+      )}
+
       <div className="grid grid-cols-2 gap-2">
         <StatTile
           label="Weekly revenue"
@@ -1305,6 +2050,63 @@ function FinanceTab({ biz }: { biz: Business }) {
           value={formatMoney(biz.cash, { compact: true })}
         />
       </div>
+
+      {!hostedProperty && rentMonthly !== undefined && rentMonthly > 0 && (
+        <ConvertToOwnedCard biz={biz} onResult={setBanner} />
+      )}
+
+      {rentMonthly !== undefined && (
+        <Card
+          title="Occupancy"
+          subtitle={
+            hostedProperty
+              ? "You own the building."
+              : "Leased commercial space."
+          }
+        >
+          <div className="grid grid-cols-2 gap-2 text-xs">
+            <div
+              className="rounded-lg border border-ink-800 bg-ink-900/60 px-3 py-2"
+              title={
+                hostedProperty
+                  ? "You own the building. No rent, but property taxes + maintenance still apply — they show up on the monthly personal ledger, not the business weekly."
+                  : "Rent is drawn weekly from the business's operating cash at this monthly rate ÷ 4."
+              }
+            >
+              <div className="text-ink-400">Rent</div>
+              <div className="text-ink-50 font-mono">
+                {hostedProperty
+                  ? "$0"
+                  : formatMoney(rentMonthly, { compact: true }) + "/mo"}
+              </div>
+              <div className="text-[10px] text-ink-500 mt-0.5">
+                {hostedProperty
+                  ? "Owned — no rent draw"
+                  : `≈ ${formatMoney(rentWeeklyDraw ?? 0, { compact: true })} weekly draw`}
+              </div>
+            </div>
+            {hostedProperty && (
+              <Link
+                to="/finance"
+                className="rounded-lg border border-money/60 bg-money/10 px-3 py-2 hover:bg-money/15 transition-colors"
+                title="You own the building hosting this business. Taxes and maintenance still apply at the monthly settlement."
+              >
+                <div className="text-money">🏠 Owned property</div>
+                <div className="text-ink-50 font-mono text-xs truncate">
+                  {hostedProperty.address}
+                </div>
+                <div className="text-[10px] text-ink-500 mt-0.5">
+                  Maintenance{" "}
+                  {formatMoney(hostedProperty.maintenanceMonthlyCents, {
+                    compact: true,
+                  })}
+                  /mo · view in Finance
+                </div>
+              </Link>
+            )}
+          </div>
+        </Card>
+      )}
 
       {loan && (
         <Card

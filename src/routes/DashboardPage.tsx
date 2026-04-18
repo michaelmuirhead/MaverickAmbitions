@@ -7,6 +7,7 @@ import { ContentGrid } from "@/components/layout/ContentGrid";
 import { EventBanner } from "@/components/game/EventBanner";
 import { EventsFeed } from "@/components/game/EventsFeed";
 import { WealthBreakdownCard } from "@/components/game/WealthBreakdownCard";
+import { PortfolioWarningsBanner } from "@/components/game/PortfolioWarningsBanner";
 
 import { useGameStore } from "@/state/store";
 import {
@@ -42,6 +43,8 @@ export function DashboardPage() {
       </header>
 
       <EventBanner banners={macroBanners} />
+
+      <PortfolioWarningsBanner game={game} />
 
       <ContentGrid>
         <StatTile
@@ -90,34 +93,64 @@ export function DashboardPage() {
             <EmptyBusinesses />
           ) : (
             <ul className="divide-y divide-ink-800 -mx-1">
-              {bizs.map((b) => (
-                <li
-                  key={b.id}
-                  className="flex items-center justify-between py-3 px-1"
-                >
-                  <div className="min-w-0">
-                    <div className="font-medium text-ink-50 truncate">
-                      {b.name}
+              {bizs.map((b) => {
+                const status = b.status ?? "operating";
+                const weeks = b.insolvencyWeeks ?? 0;
+                const badgeTone =
+                  status === "insolvent"
+                    ? "bg-loss/20 text-loss border-loss/50"
+                    : status === "distressed"
+                      ? "bg-amber-900/40 text-amber-200 border-amber-700/60"
+                      : null;
+                return (
+                  <li
+                    key={b.id}
+                    className="flex items-center justify-between py-3 px-1"
+                  >
+                    <div className="min-w-0">
+                      <div className="font-medium text-ink-50 truncate flex items-center gap-2">
+                        <span className="truncate">{b.name}</span>
+                        {badgeTone && (
+                          <span
+                            className={`text-[10px] px-1.5 py-0.5 rounded border uppercase tracking-wide font-semibold shrink-0 ${badgeTone}`}
+                            title={
+                              status === "insolvent"
+                                ? "Forced liquidation next weekly tick"
+                                : `Week ${weeks} of 4 underwater`
+                            }
+                          >
+                            {status === "insolvent"
+                              ? "Insolvent"
+                              : `Distressed ${weeks}/4`}
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-xs text-ink-400">
+                        {game.markets[b.locationId]?.name ?? "—"} · Cash{" "}
+                        <span
+                          className={
+                            b.cash < 0 ? "text-loss font-mono" : "font-mono"
+                          }
+                        >
+                          {formatMoney(b.cash, { compact: true, sign: b.cash < 0 })}
+                        </span>
+                      </div>
                     </div>
-                    <div className="text-xs text-ink-400">
-                      {game.markets[b.locationId]?.name ?? "—"} · Cash{" "}
-                      {formatMoney(b.cash, { compact: true })}
+                    <div className="text-right font-mono text-sm tabular-nums">
+                      <div
+                        className={
+                          b.kpis.weeklyProfit >= 0 ? "text-money" : "text-loss"
+                        }
+                      >
+                        {formatMoney(b.kpis.weeklyProfit, { compact: true, sign: true })}
+                      </div>
+                      <div className="text-[11px] text-ink-400">
+                        CSAT {b.kpis.customerSatisfaction.toFixed(0)}
+                      </div>
                     </div>
-                  </div>
-                  <div className="text-right font-mono text-sm tabular-nums">
-                    <div
-                      className={
-                        b.kpis.weeklyProfit >= 0 ? "text-money" : "text-loss"
-                      }
-                    >
-                      {formatMoney(b.kpis.weeklyProfit, { compact: true, sign: true })}
-                    </div>
-                    <div className="text-[11px] text-ink-400">
-                      CSAT {b.kpis.customerSatisfaction.toFixed(0)}
-                    </div>
-                  </div>
-                </li>
-              ))}
+                  </li>
+                );
+              })}
             </ul>
           )}
         </Card>

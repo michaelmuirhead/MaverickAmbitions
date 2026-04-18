@@ -160,6 +160,12 @@ export type LedgerCategory =
   | "drilling_capex" // oil_gas new-well capex
   | "gov_contract" // military_tech
   | "rd_spend" // military_tech + tech startup R&D
+  // v0.9 new categories — bankruptcy / liquidation plumbing
+  | "liquidation_proceeds" // cash received from liquidation asset sale (40% of book)
+  | "liquidation_writeoff" // book-value loss at closure (negative)
+  | "foreclosure_proceeds" // cash received when personal BK foreclosures a property
+  | "foreclosure_writeoff" // book-value loss when foreclosed at 90%
+  | "debt_discharge" // unsecured debt wiped in personal bankruptcy (positive net)
   | "other";
 
 // ---------- Player ----------
@@ -203,6 +209,58 @@ export interface PlayerCharacter {
   alive: boolean;
   birthTick: Tick;
   deathTick?: Tick;
+  /**
+   * Unsecured personal debt. In v0.9, this accumulates when a business
+   * loan collapses to the player's personal guarantee at liquidation. It
+   * is discharged (partially or entirely) on personal bankruptcy. Measured
+   * in cents; always >= 0.
+   */
+  personalUnsecuredDebtCents: Cents;
+  /**
+   * Active bankruptcy lockout flag. Set on personal bankruptcy filing and
+   * expires 7 in-game years later (24 ticks × 7 days × 52 weeks × 7 years
+   * = 61,152 ticks). While present: no new business loans, doubled down
+   * payments on real estate, halved finance-band caps on commercial leases.
+   */
+  bankruptcyFlag?: {
+    filedAtTick: Tick;
+    /** Absolute tick after which the flag is considered expired. */
+    expiresAtTick: Tick;
+  };
+  /** Historical record of filed bankruptcies (never cleared). */
+  bankruptcyHistory: Array<{
+    tick: Tick;
+    netWorthAtFilingCents: Cents;
+  }>;
+  /**
+   * Postmortem records for businesses this player has closed (voluntarily
+   * or via forced liquidation). Keyed by original business id. Used to
+   * render the graveyard view on /business.
+   */
+  closedBusinesses: Record<Id, ClosedBusinessRecord>;
+}
+
+/**
+ * Postmortem record stored when a business closes. The source Business
+ * record is removed from `game.businesses` and `market.businessIds`, but
+ * a summary is preserved here so the player can review what happened.
+ */
+export interface ClosedBusinessRecord {
+  id: Id;
+  name: string;
+  type: BusinessTypeId;
+  marketId: Id;
+  openedAtTick: Tick;
+  closedAtTick: Tick;
+  closedReason:
+    | "liquidation" // forced by 4-week insolvency
+    | "voluntary_close" // player pressed Close Now
+    | "hosted_property_sold"; // player sold the building out from under it
+  peakWeeklyRevenueCents: Cents;
+  finalCashCents: Cents;
+  liquidationProceedsCents: Cents;
+  unsecuredDebtFromLoanCents: Cents; // what collapsed to personal
+  creditImpact: number; // negative delta to credit score
 }
 
 // ---------- Family ----------
@@ -258,6 +316,28 @@ export type BusinessTypeId =
   | "state"
   | "nation";
 
+/**
+ * Bankruptcy state machine (v0.9).
+ *
+ * - `operating` — normal state; no cash stress.
+ * - `distressed` — cash < −$5,000 at the end of the most recent weekly
+ *   tick. Warning banners surface; no mechanical effect yet.
+ * - `insolvent` — 4 consecutive weeks distressed; engine will trigger
+ *   liquidation on the next weekly tick.
+ * - `liquidated` — terminal. The business record is removed from
+ *   `game.businesses` on transition to this state; a `ClosedBusinessRecord`
+ *   is stored on `player.closedBusinesses` for postmortem.
+ *
+ * NOTE: The `liquidated` state is never observed on an active Business
+ * (the record is deleted when it transitions), but is in the union for
+ * clarity and defensive checks.
+ */
+export type BusinessStatus =
+  | "operating"
+  | "distressed"
+  | "insolvent"
+  | "liquidated";
+
 export interface Business {
   id: Id;
   ownerId: Id; // PlayerCharacter or AIRival id
@@ -273,6 +353,38 @@ export interface Business {
   derived: BusinessDerived;
   /** If set, this business operates from an owned Property (v0.3+). */
   propertyId?: Id;
+  /**
+   * Bankruptcy state machine (v0.9). Defaults to "operating". Set to
+   * "distressed" on the first week where cash < −$5,000; counted upward
+   * in `insolvencyWeeks` while distressed. At 4 consecutive weeks the
+   * engine transitions to liquidation.
+   *
+   * Optional on the type so per-type `createBusiness` factories don't all
+   * have to hand-populate them — the store's `openBusiness` action and
+   * the v6→v7 save migration backfill both fields centrally. Readers
+   * should default to `"operating"` / `0` when absent.
+   */
+  status?: BusinessStatus;
+  /**
+   * Count of consecutive weekly ticks with `cash < DISTRESS_THRESHOLD`
+   * (−$5,000). Resets to 0 the moment cash recovers above the threshold.
+   * v0.9. Optional (see `status` above).
+   */
+  insolvencyWeeks?: number;
+  /** Tick at which this business first entered distressed state (for banners). */
+  distressedSince?: Tick;
+  /**
+   * Shared sales-lever sub-state (v0.10). Replaces the pre-v0.10 per-type
+   * `state.marketingWeekly` / `state.marketingScore` scalars and adds
+   * hours, promotion, signage, and loyalty knobs. Every storefront /
+   * hospitality / cinema business carries a populated LeverState; project-
+   * based and service businesses leave it at defaults.
+   *
+   * Optional on the type so per-type `create()` factories and the v7 → v8
+   * migration can both backfill centrally. Readers should fall back to
+   * `createDefaultLeverState()` when absent.
+   */
+  levers?: LeverState;
 }
 
 export interface BusinessKPIs {
@@ -292,6 +404,14 @@ export interface BusinessKPIs {
   weeklyUnitsSold?: number;
   /** Conversion rate 0..1 — unitsSold / visitors for the completed week. */
   weeklyConversion?: number;
+
+  /**
+   * Peak weekly revenue ever posted by this business (v0.9). Updated on
+   * every `onWeek`; used in the closed-business postmortem. Optional
+   * because older saves won't carry it until first weekly tick after the
+   * v7 migration.
+   */
+  peakWeeklyRevenue?: Cents;
 }
 
 export interface BusinessDerived {
@@ -303,6 +423,125 @@ export interface BusinessDerived {
   pendingWages: Cents;
   /** Risk score 0..100 — theft, audit, burnout, etc. */
   riskScore: number;
+}
+
+// ---------- Marketing channels (v0.10) ----------
+
+/**
+ * Six marketing channels with distinct demographic reach, cost curves,
+ * and decay profiles. Replaces the pre-v0.10 scalar `marketingWeekly` on
+ * storefront/hospitality/cinema business states.
+ *
+ * - `radio` — broad-audience, cheap, fast decay
+ * - `social` — young-skewed, scales with spend, medium decay
+ * - `tv` — older-skewed, expensive, slow decay
+ * - `magazines` — affluent-skewed niche reach, slow decay
+ * - `ooh` — out-of-home (billboards, transit); location-bound, slow decay
+ * - `email` — owned list; near-zero marginal cost, fastest decay if unused
+ */
+export type MarketingChannel =
+  | "radio"
+  | "social"
+  | "tv"
+  | "magazines"
+  | "ooh"
+  | "email";
+
+/** Convenience generic for per-channel quantities (spend, scores, etc.). */
+export type MarketingChannelMap<T = number> = Record<MarketingChannel, T>;
+
+/**
+ * Per-channel static profile — the weights that determine how a dollar of
+ * spend translates into demographic reach and how the channel's decayed
+ * score behaves. Lives in `src/data/marketingChannels.ts`.
+ */
+export interface MarketingChannelProfile {
+  id: MarketingChannel;
+  displayName: string;
+  /** Emoji / single-char for compact UI rendering. */
+  icon: string;
+  /** One-sentence description shown as a UI hint. */
+  description: string;
+  /** −1 (heavy young-skew) .. +1 (heavy old-skew). */
+  ageReach: number;
+  /** −1 (cheap-only audience) .. +1 (affluent-only). 0 = neutral. */
+  incomeReach: number;
+  /**
+   * $/week at which the channel saturates (in cents). Below this is linear;
+   * above this hits diminishing returns.
+   */
+  saturationCentsPerWeek: Cents;
+  /**
+   * Per-tick (hourly) score decay multiplier: score *= decayPerTick on
+   * every engine tick. Lower value = faster decay.
+   */
+  decayPerTick: number;
+  /**
+   * Per-$-spent-per-week score contribution (before demographic weighting)
+   * at half-saturation. Used as the "lift" term: score += weeklySpend /
+   * saturation × liftAtHalf, clamped at 1.0.
+   */
+  liftAtHalfSaturation: number;
+  /** Minimum weekly spend to register at all (cents). */
+  minWeeklyCents: Cents;
+}
+
+// ---------- Sales levers (v0.10) ----------
+
+/** 0 = Sunday, 6 = Saturday. Aligned with Date.getDay(). */
+export type DayOfWeek = 0 | 1 | 2 | 3 | 4 | 5 | 6;
+
+export interface DayHours {
+  /** 24h clock hour, 0..23. Must be strictly less than close. */
+  open: number;
+  /** 24h clock hour, 1..24. 24 means midnight roll-over. */
+  close: number;
+}
+
+/** Per-day hours value. "24h" = open 0-24; "closed" = no hours. */
+export type DayHoursValue = DayHours | "closed" | "24h";
+
+export type HoursSchedule = Record<DayOfWeek, DayHoursValue>;
+
+export type SignageTier = "none" | "banner" | "lit" | "digital";
+
+export type LoyaltyTier = "none" | "basic" | "gold";
+
+/**
+ * Scheduled store-wide promotion. Applied to every SKU's effective price
+ * for the duration; conversion and traffic lift while active; CSAT dip
+ * during, small positive bounce for ~4 weeks after (deal memory).
+ */
+export interface Promotion {
+  /** Percent off as a decimal, 0..0.5 (capped at 50%). */
+  pctOff: number;
+  startTick: Tick;
+  endTick: Tick;
+  /**
+   * Tick until which the post-promo "deal memory" CSAT bump remains active.
+   * Set at promo end to endTick + ~4 weeks.
+   */
+  memoryUntilTick?: Tick;
+}
+
+/**
+ * Shared sales-lever sub-state. Embedded inside per-type business state
+ * on every storefront / hospitality / cinema module. Central helpers in
+ * `src/engine/business/leverState.ts` create, tick, and query this shape.
+ */
+export interface LeverState {
+  marketingByChannel: MarketingChannelMap<Cents>;
+  marketingScoreByChannel: MarketingChannelMap<number>;
+  hours: HoursSchedule;
+  signageTier: SignageTier;
+  /** Tick the current signage tier was purchased/upgraded. */
+  signagePurchasedAt?: Tick;
+  /** 0..1 signage freshness; decays very slowly. */
+  signageQuality: number;
+  loyaltyTier: LoyaltyTier;
+  /** 0..1 repeat-customer share. Driven up by loyaltyTier + CSAT. */
+  repeatCustomerShare: number;
+  promotion: Promotion | null;
 }
 
 // ---------- Region ----------
@@ -342,6 +581,27 @@ export interface Region {
 
 // ---------- Market ----------
 
+/**
+ * Market demographics (v0.10). Drives per-channel marketing effectiveness
+ * via `dot(channelReach, demographics)` in
+ * `src/engine/business/marketingChannels.ts`. All 46 STARTER_MARKETS carry
+ * hand-tuned demographics; the v7 → v8 save migration copies them from
+ * STARTER_MARKETS for older saves.
+ */
+export interface Demographics {
+  /** Median resident age in years (roughly 26..58 across the roster). */
+  medianAge: number;
+  /** Median household income in cents. Mirrors Market.medianIncome. */
+  medianIncome: Cents;
+  /** −1 (heavy young-skew) .. +1 (heavy old-skew). 0 = balanced age mix. */
+  ageSkew: number;
+  /**
+   * −1 (tight income distribution — mostly near median)
+   * .. +1 (wide income distribution — both extremes present).
+   */
+  incomeSkew: number;
+}
+
 export interface Market {
   id: Id;
   name: string;
@@ -349,6 +609,13 @@ export interface Market {
   medianIncome: Cents;
   /** 0..1 desirability multiplier that affects rent, traffic, wages. */
   desirability: number;
+  /**
+   * Extended demographics (v0.10). Used by the channelized-marketing
+   * reach model. Optional so v7 → v8 migration can copy from STARTER_MARKETS
+   * on hydration. Readers should fall back to STARTER_MARKETS[id].demographics
+   * when absent.
+   */
+  demographics?: Demographics;
   /**
    * One-to-two-sentence flavor description surfaced in the MarketPage UI.
    * Establishes neighborhood character within the game's setting
@@ -506,6 +773,29 @@ export interface GameEvent {
     reputationDelta?: number;
   };
   dismissed: boolean;
+  /**
+   * v0.9. If true, this event should pause any running fast-forward
+   * (Day ▸ / Week ▸ / Event ▸) so the player can react. Set on distress
+   * warnings, insolvency, macro shock transitions, rival territorial
+   * moves, and personal lifecycle events. Non-blocking events (routine
+   * payroll, slow-week profit) leave this undefined and allow continued
+   * fast-forward under the default pauseOnEvent=\"blocking\" setting.
+   */
+  blocking?: boolean;
+}
+
+/**
+ * Game-wide settings. Kept on `GameState` so they travel with saves.
+ * v0.9 introduces the first persisted setting; earlier versions had none.
+ */
+export interface GameSettings {
+  /**
+   * Controls whether fast-forwards (Day / Week / Event buttons) pause on
+   * game events. "all" — any non-dismissed event halts the burst.
+   * "blocking" — only events with `blocking: true` halt. "never" — events
+   * never halt a fast-forward. Default "blocking".
+   */
+  pauseOnEvent: "all" | "blocking" | "never";
 }
 
 // ---------- Top-level save shape ----------
@@ -547,4 +837,9 @@ export interface GameState {
     philanthropy: Cents;
     influence: number;
   };
+  /**
+   * Game-wide settings (v0.9+). Persisted with save so each slot can
+   * carry its own preferences.
+   */
+  settings: GameSettings;
 }
